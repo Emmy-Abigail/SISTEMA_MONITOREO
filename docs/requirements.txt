@@ -1,0 +1,6 @@
+flask
+twilio
+requests
+opencv-python
+ultralytics
+gunicorn
