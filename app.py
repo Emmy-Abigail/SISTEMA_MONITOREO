@@ -120,40 +120,56 @@ def obtener_configuracion():
 def recibir_alerta():
     """
     Endpoint que la Raspberry Pi usa para notificar detecciones.
-    Requiere el header X-ALERTA-KEY con el secreto configurado en ALERTA_KEY.
-    Body JSON esperado: {"especie":"tortugas","cantidad":2}
     """
-    # Verificar llave de seguridad
     if ALERTA_KEY:
         header_key = request.headers.get("X-ALERTA-KEY", "")
         if header_key != ALERTA_KEY:
             app.logger.warning("Intento de acceso a /alerta con llave inválida")
             return jsonify({"error": "Unauthorized"}), 401
-
+    
     try:
         data = request.get_json(force=True)
         especie = data.get("especie", "tortugas")
         cantidad = data.get("cantidad", 1)
+        imagen_url = data.get("imagen", None)
     except Exception as e:
         app.logger.error(f"Error parsing JSON en /alerta: {e}")
         return jsonify({"error": "bad request"}), 400
-
+    
     usuarios = cargar_json(USUARIOS_FILE)
     if not usuarios:
-        app.logger.info("No hay usuarios registrados para enviar alertas.")
+        app.logger.info("No hay usuarios registrados.")
         return jsonify({"status": "no_users"}), 200
-
-    texto = f"🚨 Se detectaron {cantidad} {especie}."
+    
+    # Preparar mensaje
+    texto = f"🚨 *DETECCIÓN AUTOMÁTICA*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
+    if imagen_url:
+        texto += "\n\n📸 Imagen adjunta."
+    
     enviado_a = []
     fallos = []
-
+    
+    # Enviar con imagen si existe
     for numero in usuarios.keys():
-        success = enviar_whatsapp(numero, texto)
-        if success:
+        try:
+            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            
+            msg_params = {
+                "from_": TWILIO_WHATSAPP_FROM,
+                "body": texto,
+                "to": numero
+            }
+            
+            if imagen_url:
+                msg_params["media_url"] = [imagen_url]
+            
+            message = client.messages.create(**msg_params)
+            app.logger.info(f"Mensaje enviado a {numero}: {message.sid}")
             enviado_a.append(numero)
-        else:
+        except Exception as e:
+            app.logger.error(f"Error enviando a {numero}: {e}")
             fallos.append(numero)
-
+    
     return jsonify({"status": "ok", "enviados": enviado_a, "fallos": fallos}), 200
 
 if __name__ == "__main__":
