@@ -1,24 +1,64 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
 import json
 import os
+import tempfile
 
 app = Flask(__name__)
 
-USUARIOS_FILE = "data/usuarios.json"
-ESTADOS_FILE = "data/estados.json"
+# Usar /tmp para evitar problemas de persistencia en Railway
+TMP_DIR = tempfile.gettempdir()
+USUARIOS_FILE = os.path.join(TMP_DIR, "usuarios.json")
+ESTADOS_FILE = os.path.join(TMP_DIR, "estados.json")
+
+# Variables de entorno esperadas
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # e.g. "whatsapp:+1415xxxxxxx"
+ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para proteger /alerta
 
 def cargar_json(ruta):
-    if not os.path.exists(ruta):
-        os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        with open(ruta, "w") as f:
-            json.dump({}, f)
-    with open(ruta, "r") as f:
-        return json.load(f)
+    try:
+        if not os.path.exists(ruta):
+            # asegúrate que exista el archivo con un diccionario vacío
+            with open(ruta, "w") as f:
+                json.dump({}, f)
+        with open(ruta, "r") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        app.logger.warning(f"Error cargando JSON {ruta}: {e}")
+        return {}
 
 def guardar_json(ruta, data):
-    with open(ruta, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(ruta, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        app.logger.error(f"Error guardando JSON {ruta}: {e}")
+
+def enviar_whatsapp(numero_destino, texto):
+    """
+    Envía WhatsApp usando Twilio REST API.
+    numero_destino debe tener el formato: 'whatsapp:+51...' o 'whatsapp:+1...'
+    """
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
+        app.logger.error("Credenciales Twilio no están configuradas en variables de entorno.")
+        return False
+
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            body=texto,
+            to=numero_destino
+        )
+        app.logger.info(f"Mensaje Twilio SID: {message.sid} enviado a {numero_destino}")
+        return True
+    except Exception as e:
+        app.logger.error(f"Error enviando WhatsApp: {e}")
+        return False
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
@@ -68,11 +108,59 @@ def whatsapp_reply():
 
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
+    """
+    La Raspberry Pi consulta este endpoint para saber qué especie monitorear.
+    Devuelve {"mode": "tortugas"} por ejemplo.
+    """
     estados = cargar_json(ESTADOS_FILE)
-    return {"mode": list(estados.values())[-1] if estados else "tortugas"}
+    mode = list(estados.values())[-1] if estados else "tortugas"
+    return jsonify({"mode": mode})
+
+@app.route("/alerta", methods=["POST"])
+def recibir_alerta():
+    """
+    Endpoint que la Raspberry Pi usa para notificar detecciones.
+    Requiere el header X-ALERTA-KEY con el secreto configurado en ALERTA_KEY.
+    Body JSON esperado: {"especie":"tortugas","cantidad":2}
+    """
+    # Verificar llave de seguridad
+    if ALERTA_KEY:
+        header_key = request.headers.get("X-ALERTA-KEY", "")
+        if header_key != ALERTA_KEY:
+            app.logger.warning("Intento de acceso a /alerta con llave inválida")
+            return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        data = request.get_json(force=True)
+        especie = data.get("especie", "tortugas")
+        cantidad = data.get("cantidad", 1)
+    except Exception as e:
+        app.logger.error(f"Error parsing JSON en /alerta: {e}")
+        return jsonify({"error": "bad request"}), 400
+
+    usuarios = cargar_json(USUARIOS_FILE)
+    if not usuarios:
+        app.logger.info("No hay usuarios registrados para enviar alertas.")
+        return jsonify({"status": "no_users"}), 200
+
+    texto = f"🚨 Se detectaron {cantidad} {especie}."
+    enviado_a = []
+    fallos = []
+
+    for numero in usuarios.keys():
+        success = enviar_whatsapp(numero, texto)
+        if success:
+            enviado_a.append(numero)
+        else:
+            fallos.append(numero)
+
+    return jsonify({"status": "ok", "enviados": enviado_a, "fallos": fallos}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # puerto dinámico para Railway y otros hosts
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
 
 
 

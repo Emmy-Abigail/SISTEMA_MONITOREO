@@ -1,6 +1,4 @@
-flask
+Flask
 twilio
-requests
-opencv-python
-ultralytics
 gunicorn
+requests
