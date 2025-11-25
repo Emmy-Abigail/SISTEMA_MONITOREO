@@ -2,3 +2,4 @@ Flask
 twilio
 gunicorn
 requests
+opencv-python
