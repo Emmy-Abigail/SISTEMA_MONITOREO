@@ -1,0 +1,20 @@
+# Entornos
+venv/
+env/
+__pycache__/
+
+# Archivos temporales
+*.log
+*.tmp
+
+# Modelos grandes (se subiran manualmente a la Raspberry)
+models/*
+!models/.placeholder
+
+# Datos locales
+data/usuarios.json
+data/estados.json
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
