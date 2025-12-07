@@ -3,6 +3,7 @@ import json
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
+import tempfile
 
 app = Flask(__name__)
 
@@ -27,136 +28,80 @@ for f in [USUARIOS_FILE, ESTADOS_FILE]:
 # -----------------------
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+14155238886
-ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")  # secreto para /alerta
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+1415xxxxxxx
+ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
 
 # -----------------------
 # Funciones auxiliares
 # -----------------------
 def cargar_json(ruta):
     try:
+        # Si es el archivo de usuarios, SIEMPRE asegurar que tu número esté
+        if "usuarios" in ruta:
+            # Tu número SIEMPRE registrado
+            usuarios_default = {"whatsapp:+51918516679": True}
+            
+            if os.path.exists(ruta):
+                with open(ruta, "r") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        # Combinar usuarios existentes con el default
+                        usuarios_default.update(data)
+            
+            # Guardar con tu número incluido
+            with open(ruta, "w") as f:
+                json.dump(usuarios_default, f, indent=4)
+            
+            app.logger.info(f"✅ Usuarios cargados: {list(usuarios_default.keys())}")
+            return usuarios_default
+        
+        # Para otros archivos (estados, etc.)
+        if not os.path.exists(ruta):
+            with open(ruta, "w") as f:
+                json.dump({}, f)
+        
         with open(ruta, "r") as f:
             data = json.load(f)
             return data if isinstance(data, dict) else {}
+            
     except Exception as e:
         app.logger.warning(f"Error cargando JSON {ruta}: {e}")
+        # Si es usuarios y hay error, devolver tu número
+        if "usuarios" in ruta:
+            return {"whatsapp:+51918516679": True}
         return {}
-
-def guardar_json(ruta, data):
-    try:
-        with open(ruta, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        app.logger.error(f"Error guardando JSON {ruta}: {e}")
-
-def enviar_whatsapp(numero_destino, texto, imagen_url=None):
-    """
-    Envía WhatsApp usando Twilio REST API
-    """
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
-        app.logger.error("Credenciales Twilio no configuradas")
-        return False
-    try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        msg_params = {
-            "from_": TWILIO_WHATSAPP_FROM,
-            "body": texto,
-            "to": numero_destino
-        }
-        if imagen_url:
-            msg_params["media_url"] = [imagen_url]
-            
-        message = client.messages.create(**msg_params)
-        app.logger.info(f"Mensaje Twilio SID: {message.sid} enviado a {numero_destino}")
-        return True
-    except Exception as e:
-        app.logger.error(f"Error enviando WhatsApp: {e}")
-        return False
 
 # -----------------------
 # Endpoints
 # -----------------------
 
-@app.route("/", methods=["GET"])
-def home():
-    """Endpoint raíz para verificar que el servidor está corriendo"""
-    return jsonify({
-        "status": "online",
-        "service": "Sistema de Monitoreo Wildlife",
-        "endpoints": ["/whatsapp", "/config", "/alerta", "/api/usuarios", "/debug"]
-    }), 200
-
-@app.route("/debug", methods=["GET"])
-def debug():
-    """Endpoint de debug para verificar configuración"""
-    return jsonify({
-        "twilio_sid_configured": bool(TWILIO_ACCOUNT_SID),
-        "twilio_token_configured": bool(TWILIO_AUTH_TOKEN),
-        "twilio_from_configured": bool(TWILIO_WHATSAPP_FROM),
-        "twilio_from_value": TWILIO_WHATSAPP_FROM if TWILIO_WHATSAPP_FROM else "NOT SET",
-        "alerta_key_configured": bool(ALERTA_KEY),
-        "usuarios_file": USUARIOS_FILE,
-        "estados_file": ESTADOS_FILE
-    })
-
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    """Maneja mensajes entrantes de WhatsApp vía Twilio"""
     from_number = request.values.get("From", "")
     incoming_msg = request.values.get("Body", "").strip().lower()
-    
-    # 🔍 DEBUG: Logs para ver qué llega
-    app.logger.info(f"📱 Mensaje recibido de WhatsApp")
-    app.logger.info(f"   De: {from_number}")
-    app.logger.info(f"   Mensaje: '{incoming_msg}'")
-    
+
     usuarios = cargar_json(USUARIOS_FILE)
     estados = cargar_json(ESTADOS_FILE)
-    
-    app.logger.info(f"   Usuarios registrados actualmente: {len(usuarios)}")
-    
+
     resp = MessagingResponse()
     msg = resp.message()
 
     # Registrar usuario
-    if incoming_msg.startswith("join") or incoming_msg == "registrar":
+    if incoming_msg.startswith("join"):
         usuarios[from_number] = True
         guardar_json(USUARIOS_FILE, usuarios)
-        app.logger.info(f"✅ Usuario {from_number} registrado exitosamente")
-        msg.body("🟢 *Registro exitoso*\n\nTu número ha sido registrado y ahora recibirás alertas de detección.\n\nEscribe *menu* para ver opciones.")
-        return str(resp)
-
-    # Salir/Desregistrar
-    if incoming_msg == "salir" or incoming_msg == "stop":
-        if from_number in usuarios:
-            del usuarios[from_number]
-            guardar_json(USUARIOS_FILE, usuarios)
-            app.logger.info(f"❌ Usuario {from_number} desregistrado")
-            msg.body("👋 Has sido removido de las alertas.\n\nEscribe *join* para volver a registrarte.")
-        else:
-            msg.body("No estabas registrado.")
+        msg.body("🟢 *Registro exitoso*\nTu número ha sido registrado y ahora recibirás alertas.")
         return str(resp)
 
     # Menú principal
-    if incoming_msg in ["menu", "hola", "inicio", "help"]:
+    if incoming_msg in ["menu", "hola", "inicio"]:
         texto = (
-            "🟢 *Monitoreo de Especies*\n\n"
-            "¿Qué deseas monitorear?\n\n"
+            "🟢 *Monitoreo de especies*\n\n"
+            "¿Qué deseas monitorear hoy?\n"
             "1️⃣ Tortugas 🐢\n"
             "2️⃣ Gaviotines 🐦\n\n"
-            "Responde con *1*, *2*, *tortugas* o *gaviotines*.\n\n"
-            "Otros comandos:\n"
-            "• *salir* - Dejar de recibir alertas\n"
-            "• *estado* - Ver modo actual"
+            "Responde con *1* o *2*."
         )
-        msg.body(texto)
-        return str(resp)
-
-    # Ver estado actual
-    if incoming_msg == "estado" or incoming_msg == "status":
-        mode = list(estados.values())[-1] if estados else "tortugas"
-        registrado = "Sí" if from_number in usuarios else "No"
-        texto = f"📊 *Estado actual*\n\nModo: *{mode}*\nRegistrado: *{registrado}*"
         msg.body(texto)
         return str(resp)
 
@@ -164,20 +109,16 @@ def whatsapp_reply():
     if incoming_msg in ["1", "tortugas"]:
         estados[from_number] = "tortugas"
         guardar_json(ESTADOS_FILE, estados)
-        app.logger.info(f"🐢 Usuario {from_number} eligió tortugas")
-        msg.body("🐢 *Tortugas seleccionadas*\n\nEl sistema iniciará la detección de tortugas.")
+        msg.body("Has elegido 🐢 *Tortugas*. El sistema iniciará la detección.")
         return str(resp)
 
     if incoming_msg in ["2", "gaviotines"]:
         estados[from_number] = "gaviotines"
         guardar_json(ESTADOS_FILE, estados)
-        app.logger.info(f"🐦 Usuario {from_number} eligió gaviotines")
-        msg.body("🐦 *Gaviotines seleccionados*\n\nEl sistema iniciará la detección de gaviotines.")
+        msg.body("Has elegido 🐦 *Gaviotines*. El sistema iniciará la detección.")
         return str(resp)
 
-    # Mensaje no reconocido
-    app.logger.warning(f"⚠️ Mensaje no reconocido: '{incoming_msg}'")
-    msg.body("❓ No entendí tu mensaje.\n\nEscribe *menu* para ver las opciones disponibles.")
+    msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones.")
     return str(resp)
 
 @app.route("/config", methods=["GET"])
@@ -188,7 +129,6 @@ def obtener_configuracion():
     """
     estados = cargar_json(ESTADOS_FILE)
     mode = list(estados.values())[-1] if estados else "tortugas"
-    app.logger.info(f"📡 Raspberry Pi consultó config, modo: {mode}")
     return jsonify({"mode": mode})
 
 @app.route("/alerta", methods=["POST"])
@@ -196,38 +136,34 @@ def recibir_alerta():
     """
     Endpoint usado por detector.py para notificar detecciones.
     """
-    # Validar clave de acceso
     if ALERTA_KEY:
         header_key = request.headers.get("X-ALERTA-KEY", "")
         if header_key != ALERTA_KEY:
-            app.logger.warning(f"⚠️ Intento de acceso a /alerta con llave inválida: {header_key}")
+            app.logger.warning("Intento de acceso a /alerta con llave inválida")
             return jsonify({"error": "Unauthorized"}), 401
 
     try:
         data = request.get_json(force=True)
-        especie = data.get("especie", "desconocido")
+        especie = data.get("especie", "tortugas")
         cantidad = data.get("cantidad", 1)
         imagen_url = data.get("imagen", None)
     except Exception as e:
-        app.logger.error(f"❌ Error parsing JSON en /alerta: {e}")
+        app.logger.error(f"Error parsing JSON en /alerta: {e}")
         return jsonify({"error": "bad request"}), 400
-
-    app.logger.info(f"🚨 Alerta recibida: {especie} x{cantidad}")
 
     usuarios = cargar_json(USUARIOS_FILE)
     if not usuarios:
-        app.logger.info("⚠️ No hay usuarios registrados para enviar alertas")
+        app.logger.info("No hay usuarios registrados.")
         return jsonify({"status": "no_users"}), 200
 
-    # Crear mensaje personalizado
     texto = f"🚨 *DETECCIÓN AUTOMÁTICA*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
     if imagen_url:
-        texto += "\n\n📸 Imagen de la detección adjunta."
+        texto += "\n\n📸 Imagen adjunta."
 
     enviados = []
     fallos = []
 
-    # Enviar mensaje a todos los usuarios registrados
+    # Enviar mensaje a todos los usuarios
     for numero in usuarios.keys():
         try:
             client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -238,48 +174,18 @@ def recibir_alerta():
             }
             if imagen_url:
                 msg_params["media_url"] = [imagen_url]
-            
             message = client.messages.create(**msg_params)
-            app.logger.info(f"✅ Mensaje enviado a {numero}: {message.sid}")
+            app.logger.info(f"Mensaje enviado a {numero}: {message.sid}")
             enviados.append(numero)
         except Exception as e:
-            app.logger.error(f"❌ Error enviando a {numero}: {e}")
+            app.logger.error(f"Error enviando a {numero}: {e}")
             fallos.append(numero)
 
-    return jsonify({
-        "status": "ok",
-        "enviados": len(enviados),
-        "fallos": len(fallos),
-        "usuarios_notificados": enviados
-    }), 200
-
-@app.route("/api/usuarios", methods=["GET"])
-def listar_usuarios():
-    """Lista todos los usuarios registrados"""
-    usuarios = cargar_json(USUARIOS_FILE)
-    return jsonify({
-        "total": len(usuarios),
-        "usuarios": list(usuarios.keys())
-    }), 200
-
-@app.route("/api/estados", methods=["GET"])
-def listar_estados():
-    """Lista los estados/preferencias de usuarios"""
-    estados = cargar_json(ESTADOS_FILE)
-    return jsonify({
-        "total": len(estados),
-        "estados": estados
-    }), 200
+    return jsonify({"status": "ok", "enviados": enviados, "fallos": fallos}), 200
 
 # -----------------------
 # Run
 # -----------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.logger.info(f"🚀 Iniciando servidor en puerto {port}")
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
