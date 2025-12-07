@@ -11,7 +11,7 @@ IMAGES_DIR = os.path.join(PROJECT_DIR, "images", "capturas")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 # URL y clave de Railway
-RAILWAY_URL = os.environ.get("RAILWAY_URL", "http://localhost:5000")
+RAILWAY_URL = os.environ.get("RAILWAY_URL", "https://web-production-9eaa.up.railway.app")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
 
 def guardar_imagen(frame):

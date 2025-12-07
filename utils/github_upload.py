@@ -3,9 +3,12 @@ import base64
 import requests
 import datetime
 import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 # Cargar token desde variables de entorno (seguro)
-
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # Repositorio principal del proyecto
@@ -67,4 +70,3 @@ def subir_a_github(ruta_imagen):
 
     print("❌ Error subiendo imagen:", r.status_code, r.text)
     return None
-

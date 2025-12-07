@@ -1,0 +1,35 @@
+# Variables de entorno - NUNCA subir
+.env
+.env.local
+.env.*.local
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv/
+
+# Imágenes capturadas localmente
+images/capturas/*.jpg
+images/capturas/*.png
+!images/capturas/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Tokens y credenciales
+*.key
+*.pem
+credentials.json
