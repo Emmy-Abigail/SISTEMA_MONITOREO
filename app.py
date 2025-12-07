@@ -36,40 +36,39 @@ ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
 # -----------------------
 def cargar_json(ruta):
     try:
-        # Si es el archivo de usuarios, SIEMPRE asegurar que tu número esté
-        if "usuarios" in ruta:
-            # Tu número SIEMPRE registrado
-            usuarios_default = {"whatsapp:+51918516679": True}
-            
-            if os.path.exists(ruta):
-                with open(ruta, "r") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        # Combinar usuarios existentes con el default
-                        usuarios_default.update(data)
-            
-            # Guardar con tu número incluido
-            with open(ruta, "w") as f:
-                json.dump(usuarios_default, f, indent=4)
-            
-            app.logger.info(f"✅ Usuarios cargados: {list(usuarios_default.keys())}")
-            return usuarios_default
-        
-        # Para otros archivos (estados, etc.)
-        if not os.path.exists(ruta):
-            with open(ruta, "w") as f:
-                json.dump({}, f)
-        
         with open(ruta, "r") as f:
             data = json.load(f)
             return data if isinstance(data, dict) else {}
-            
     except Exception as e:
         app.logger.warning(f"Error cargando JSON {ruta}: {e}")
-        # Si es usuarios y hay error, devolver tu número
-        if "usuarios" in ruta:
-            return {"whatsapp:+51918516679": True}
         return {}
+
+def guardar_json(ruta, data):
+    try:
+        with open(ruta, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        app.logger.error(f"Error guardando JSON {ruta}: {e}")
+
+def enviar_whatsapp(numero_destino, texto):
+    """
+    Envía WhatsApp usando Twilio REST API
+    """
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
+        app.logger.error("Credenciales Twilio no configuradas")
+        return False
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            from_=TWILIO_WHATSAPP_FROM,
+            body=texto,
+            to=numero_destino
+        )
+        app.logger.info(f"Mensaje Twilio SID: {message.sid} enviado a {numero_destino}")
+        return True
+    except Exception as e:
+        app.logger.error(f"Error enviando WhatsApp: {e}")
+        return False
 
 # -----------------------
 # Endpoints
