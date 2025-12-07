@@ -182,6 +182,16 @@ def recibir_alerta():
 
     return jsonify({"status": "ok", "enviados": enviados, "fallos": fallos}), 200
 
+
+@app.route("/api/usuarios", methods=["GET"])
+def listar_usuarios():
+    """Lista todos los usuarios registrados"""
+    usuarios = cargar_json(USUARIOS_FILE)
+    return jsonify({
+        "total": len(usuarios),
+        "usuarios": list(usuarios.keys())
+    }), 200
+
 # -----------------------
 # Run
 # -----------------------
