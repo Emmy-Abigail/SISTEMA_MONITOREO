@@ -73,11 +73,10 @@ polars-runtime-32==1.35.2
 propcache==0.4.1
 psutil==5.9.4
 ptyprocess==0.7.0
-pycairo==1.20.1
+pycairo==1.20.1  # Solo si picamera2 lo requiere, versión vieja que suele compilar sin problemas
 pycryptodomex==3.11.0
 pycups==2.0.1
 Pygments==2.14.0
-PyGObject==3.42.2
 pyinotify==0.9.6
 PyJWT==2.6.0
 pylint==2.16.2
@@ -89,6 +88,7 @@ PyQt5-sip==12.11.1
 pyrsistent==0.18.1
 pyserial==3.5
 pysmbc==1.0.23
+python-apt==2.6.0
 python-dateutil==2.9.0.post0
 python-dotenv==0.21.0
 python-prctl==1.8.1
@@ -112,6 +112,7 @@ six==1.16.0
 smbus2==0.4.2
 soupsieve==2.3.2
 spidev==3.5
+ssh-import-id==5.10
 sympy==1.14.0
 thonny==4.1.4
 toml==0.10.2
@@ -135,4 +136,3 @@ wheel==0.38.4
 wrapt==1.14.1
 yarl==1.22.0
 zipp==1.0.0
-
