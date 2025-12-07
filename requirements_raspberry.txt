@@ -83,7 +83,6 @@ pyOpenSSL==23.0.0
 pyparsing==3.2.5
 pyrsistent==0.18.1
 pyserial==3.5
-pysmbc==1.0.23
 python-apt==2.6.0
 python-dateutil==2.9.0.post0
 python-dotenv==0.21.0
