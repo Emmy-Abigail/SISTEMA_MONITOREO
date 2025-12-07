@@ -23,9 +23,15 @@ def guardar_imagen(frame):
     cv2.imwrite(ruta, frame)
     return ruta
 
-def enviar_alerta(especie, cantidad, frame):
+def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
     """
     Envía alerta a Railway, que se encarga de notificar a todos los usuarios.
+    
+    Args:
+        especie: Tipo detectado (tortugas, gaviotines, perros, personas, vehiculos)
+        cantidad: Número detectados
+        frame: Imagen capturada
+        es_amenaza: True si es una amenaza (perro, persona, vehiculo)
     """
     print("📸 Guardando imagen…")
     ruta_img = guardar_imagen(frame)
@@ -37,12 +43,34 @@ def enviar_alerta(especie, cantidad, frame):
         print("❌ Error: no se pudo subir la imagen.")
         return
     
+    # Determinar tipo de alerta
+    tipo_alerta = "amenaza" if es_amenaza else "deteccion"
+    
+    # Mensaje personalizado según el tipo
+    if es_amenaza:
+        emoji_map = {
+            "perros": "🐕",
+            "personas": "👤",
+            "vehiculos": "🚗"
+        }
+        emoji = emoji_map.get(especie, "⚠️")
+        mensaje_prefix = f"🚨 ALERTA DE AMENAZA {emoji}"
+    else:
+        emoji_map = {
+            "tortugas": "🐢",
+            "gaviotines": "🐦"
+        }
+        emoji = emoji_map.get(especie, "📊")
+        mensaje_prefix = f"✅ Detección {emoji}"
+    
     # Notificar a Railway
     try:
         payload = {
             "especie": especie,
             "cantidad": cantidad,
-            "imagen": url_imagen
+            "imagen": url_imagen,
+            "tipo": tipo_alerta,
+            "mensaje_prefix": mensaje_prefix
         }
         headers = {
             "X-ALERTA-KEY": ALERTA_KEY,
@@ -64,5 +92,3 @@ def enviar_alerta(especie, cantidad, frame):
     
     except Exception as e:
         print(f"❌ Error al notificar a Railway: {e}")
-
-
