@@ -1,14 +1,14 @@
 import os
 import json
-import subprocess
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
+from datetime import datetime
 
 app = Flask(__name__)
 
 # -----------------------
-# Carpeta persistente
+# Configuración
 # -----------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -17,26 +17,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 USUARIOS_FILE = os.path.join(DATA_DIR, "usuarios.json")
 ESTADOS_FILE = os.path.join(DATA_DIR, "estados.json")
 
-# Crear archivos vacíos si no existen
+# Crear archivos si no existen
 for f in [USUARIOS_FILE, ESTADOS_FILE]:
     if not os.path.exists(f):
         with open(f, "w") as file:
             json.dump({}, file)
 
-# -----------------------
 # Variables de entorno
-# -----------------------
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
-ALERTA_KEY = os.environ.get("ALERTA_KEY")
-RAILWAY_URL = os.environ.get("RAILWAY_URL")  # URL de tu servidor en Railway
-
-# -----------------------
-# Variables del detector
-# -----------------------
-DETECTOR_PROCESS = None
-ULTIMA_ESPECIE = None
+ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
 
 # -----------------------
 # Funciones auxiliares
@@ -60,8 +51,9 @@ def guardar_json(ruta, data):
 def enviar_whatsapp(numero_destino, texto, media_url=None):
     """Envía WhatsApp usando Twilio REST API"""
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
-        app.logger.error("Credenciales Twilio no configuradas")
+        app.logger.error("❌ Credenciales Twilio no configuradas")
         return False
+    
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         msg_params = {
@@ -71,47 +63,34 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
         }
         if media_url:
             msg_params["media_url"] = [media_url]
+        
         message = client.messages.create(**msg_params)
-        app.logger.info(f"Mensaje Twilio SID: {message.sid} enviado a {numero_destino}")
+        app.logger.info(f"✅ Mensaje enviado a {numero_destino} - SID: {message.sid}")
         return True
     except Exception as e:
-        app.logger.error(f"Error enviando WhatsApp: {e}")
+        app.logger.error(f"❌ Error enviando WhatsApp: {e}")
         return False
 
-def iniciar_detector(especie):
-    """Inicia detector.py si no está corriendo o si cambió la especie"""
-    global DETECTOR_PROCESS, ULTIMA_ESPECIE
+def obtener_menu():
+    """Retorna el menú de opciones"""
+    return """🦅 *SISTEMA DE MONITOREO DE VIDA SILVESTRE* 🐢
 
-    if DETECTOR_PROCESS is None or DETECTOR_PROCESS.poll() is not None:
-        DETECTOR_PROCESS = subprocess.Popen(
-            ["python3", os.path.join(BASE_DIR, "src", "detector.py")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env={**os.environ, "ESPECIE_INICIAL": especie, "RAILWAY_URL": RAILWAY_URL}
-        )
-        ULTIMA_ESPECIE = especie
-        app.logger.info(f"✅ detector.py iniciado con especie: {especie}")
-    elif ULTIMA_ESPECIE != especie:
-        detener_detector()
-        iniciar_detector(especie)
+Selecciona qué deseas monitorear:
 
-def detener_detector():
-    """Detiene el proceso detector.py"""
-    global DETECTOR_PROCESS, ULTIMA_ESPECIE
-    if DETECTOR_PROCESS and DETECTOR_PROCESS.poll() is None:
-        DETECTOR_PROCESS.terminate()
-        DETECTOR_PROCESS.wait()
-        DETECTOR_PROCESS = None
-        ULTIMA_ESPECIE = None
-        app.logger.info("🛑 detector.py detenido")
-        return True
-    return False
+1️⃣ Tortugas marinas 🐢
+2️⃣ Gaviotines 🐦
+3️⃣ Amenazas/Invasores ⚠️
+4️⃣ Detener monitoreo 🛑
+5️⃣ Estado actual 📊
+
+Responde con el número de tu opción o escribe *menu* para ver este mensaje nuevamente."""
 
 # -----------------------
-# Endpoints
+# Webhook de WhatsApp
 # -----------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
+    """Webhook para recibir mensajes de WhatsApp"""
     from_number = request.values.get("From", "")
     incoming_msg = request.values.get("Body", "").strip().lower()
 
@@ -121,89 +100,168 @@ def whatsapp_reply():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Registrar usuario
+    # Comando: join (registro)
     if incoming_msg.startswith("join"):
-        usuarios[from_number] = True
-        guardar_json(USUARIOS_FILE, usuarios)
-        msg.body("🟢 *Registro exitoso*\nTu número ha sido registrado y ahora recibirás alertas.")
-        return str(resp)
-
-    # Comando stop
-    if incoming_msg in ["stop", "detener"]:
-        if detener_detector():
-            msg.body("🛑 Sistema de detección detenido correctamente.")
+        if from_number not in usuarios:
+            usuarios[from_number] = {
+                "registrado": True,
+                "fecha_registro": datetime.now().isoformat()
+            }
+            guardar_json(USUARIOS_FILE, usuarios)
+            msg.body(f"✅ *¡Bienvenido al sistema de monitoreo!*\n\n{obtener_menu()}")
         else:
-            msg.body("⚠️ El sistema no estaba en ejecución.")
+            msg.body(f"Ya estás registrado.\n\n{obtener_menu()}")
         return str(resp)
 
-    # Menú principal
-    if incoming_msg in ["menu", "hola", "inicio"]:
-        texto = (
-            "🟢 *Monitoreo de especies*\n\n"
-            "¿Qué deseas monitorear hoy?\n"
-            "1️⃣ Tortugas 🐢\n"
-            "2️⃣ Gaviotines 🐦\n"
-            "3️⃣ Invasores ⚠️\n\n"
-            "Responde con *1*, *2* o *3*."
-        )
-        msg.body(texto)
+    # Verificar si el usuario está registrado
+    if from_number not in usuarios:
+        msg.body("Para usar el sistema, primero envía: *join* seguido de tu código.\nEjemplo: join happy-turtle")
         return str(resp)
 
-    # Elección de especie
+    # Comando: menu, hola, inicio
+    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
+        msg.body(obtener_menu())
+        return str(resp)
+
+    # Comando: detener, stop
+    if incoming_msg in ["4", "stop", "detener", "salir"]:
+        estado_actual = estados.get(from_number, {}).get("modo")
+        
+        if estado_actual and estado_actual != "detenido":
+            estados[from_number] = {
+                "modo": "detenido",
+                "fecha_cambio": datetime.now().isoformat()
+            }
+            guardar_json(ESTADOS_FILE, estados)
+            msg.body(f"🛑 *Monitoreo de {estado_actual} detenido correctamente.*\n\n{obtener_menu()}")
+        else:
+            msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
+        return str(resp)
+
+    # Comando: estado
+    if incoming_msg in ["5", "estado"]:
+        estado = estados.get(from_number, {})
+        modo_actual = estado.get("modo", "ninguno")
+        
+        if modo_actual and modo_actual != "detenido":
+            fecha = estado.get("fecha_cambio", "desconocida")
+            msg.body(f"📊 *Estado actual*\n\n"
+                    f"Monitoreando: *{modo_actual.upper()}*\n"
+                    f"Desde: {fecha}\n\n"
+                    f"Envía *4* para detener.")
+        else:
+            msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
+        return str(resp)
+
+    # Mapeo de opciones
     especie_map = {
         "1": "tortugas",
         "tortugas": "tortugas",
+        "tortuga": "tortugas",
         "2": "gaviotines",
         "gaviotines": "gaviotines",
+        "gaviotin": "gaviotines",
         "3": "invasores",
-        "invasores": "invasores"
+        "invasores": "invasores",
+        "amenazas": "invasores",
+        "amenaza": "invasores"
     }
 
     especie_elegida = especie_map.get(incoming_msg)
+    
     if especie_elegida:
-        estados[from_number] = especie_elegida
+        # Guardar elección del usuario
+        estados[from_number] = {
+            "modo": especie_elegida,
+            "fecha_cambio": datetime.now().isoformat()
+        }
         guardar_json(ESTADOS_FILE, estados)
-        msg.body(f"Has elegido *{especie_elegida.capitalize()}*. El sistema iniciará la detección automáticamente.")
-        iniciar_detector(especie_elegida)
+        
+        emojis = {
+            "tortugas": "🐢",
+            "gaviotines": "🐦",
+            "invasores": "⚠️"
+        }
+        emoji = emojis.get(especie_elegida, "📊")
+        
+        msg.body(f"{emoji} *Monitoreo de {especie_elegida.upper()} iniciado*\n\n"
+                f"Recibirás alertas automáticas cuando se detecten {especie_elegida}.\n\n"
+                f"Envía *4* o *detener* para parar el monitoreo.")
         return str(resp)
 
-    msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones o *stop* para detener el detector.")
+    # Mensaje no reconocido
+    msg.body(f"❌ No entendí tu mensaje.\n\n{obtener_menu()}")
     return str(resp)
 
+# -----------------------
+# Endpoint de configuración
+# -----------------------
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
-    """La Raspberry Pi consulta este endpoint para saber qué especie monitorear."""
+    """
+    La Raspberry Pi consulta este endpoint para saber qué especie monitorear.
+    Retorna la última especie elegida por cualquier usuario activo.
+    """
     estados = cargar_json(ESTADOS_FILE)
-    mode = list(estados.values())[-1] if estados else "tortugas"
-    return jsonify({"mode": mode})
+    
+    # Filtrar solo estados activos (no detenidos)
+    activos = {k: v for k, v in estados.items() 
+               if v.get("modo") != "detenido"}
+    
+    if activos:
+        # Obtener el último estado activo
+        ultimo_usuario = max(activos.items(), 
+                           key=lambda x: x[1].get("fecha_cambio", ""))
+        modo = ultimo_usuario[1].get("modo", "detenido")
+    else:
+        modo = "detenido"
+    
+    app.logger.info(f"📡 Config solicitada. Modo actual: {modo}")
+    return jsonify({"mode": modo})
 
+# -----------------------
+# Endpoint de alerta
+# -----------------------
 @app.route("/alerta", methods=["POST"])
 def recibir_alerta():
-    """Endpoint usado por detector.py para notificar detecciones."""
-    if ALERTA_KEY:
-        header_key = request.headers.get("X-ALERTA-KEY", "")
-        if header_key != ALERTA_KEY:
-            app.logger.warning("Intento de acceso a /alerta con llave inválida")
-            return jsonify({"error": "Unauthorized"}), 401
+    """
+    Endpoint usado por detector.py (Raspberry Pi) para notificar detecciones.
+    Envía WhatsApp a todos los usuarios registrados.
+    """
+    # Verificar clave de seguridad
+    header_key = request.headers.get("X-ALERTA-KEY", "")
+    if header_key != ALERTA_KEY:
+        app.logger.warning("⚠️ Intento de acceso a /alerta con llave inválida")
+        return jsonify({"error": "Unauthorized"}), 401
 
     try:
         data = request.get_json(force=True)
-        especie = data.get("especie", "tortugas")
+        especie = data.get("especie", "desconocida")
         cantidad = data.get("cantidad", 1)
-        imagen_url = data.get("imagen", None)
+        imagen_url = data.get("imagen")
+        tipo = data.get("tipo", "deteccion")
+        mensaje_prefix = data.get("mensaje_prefix", "🔔 Detección")
     except Exception as e:
-        app.logger.error(f"Error parsing JSON en /alerta: {e}")
+        app.logger.error(f"❌ Error parsing JSON en /alerta: {e}")
         return jsonify({"error": "bad request"}), 400
 
+    # Cargar usuarios registrados
     usuarios = cargar_json(USUARIOS_FILE)
     if not usuarios:
-        app.logger.info("No hay usuarios registrados.")
+        app.logger.info("⚠️ No hay usuarios registrados.")
         return jsonify({"status": "no_users"}), 200
 
-    texto = f"🚨 *DETECCIÓN AUTOMÁTICA*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
+    # Construir mensaje
+    fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    texto = f"{mensaje_prefix}\n\n"
+    texto += f"📍 Especie: *{especie.upper()}*\n"
+    texto += f"🔢 Cantidad: *{cantidad}*\n"
+    texto += f"🕐 Fecha: {fecha_hora}\n"
+    
     if imagen_url:
-        texto += "\n\n📸 Imagen adjunta."
+        texto += "\n📸 Imagen adjunta a continuación."
 
+    # Enviar a todos los usuarios
     enviados = []
     fallos = []
 
@@ -213,13 +271,48 @@ def recibir_alerta():
         else:
             fallos.append(numero)
 
-    return jsonify({"status": "ok", "enviados": enviados, "fallos": fallos}), 200
+    app.logger.info(f"✅ Alertas enviadas: {len(enviados)} exitosas, {len(fallos)} fallidas")
+    
+    return jsonify({
+        "status": "ok",
+        "enviados": len(enviados),
+        "fallos": len(fallos)
+    }), 200
 
 # -----------------------
-# Run
+# Endpoint de salud
+# -----------------------
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check para Railway"""
+    estados = cargar_json(ESTADOS_FILE)
+    usuarios = cargar_json(USUARIOS_FILE)
+    
+    activos = sum(1 for v in estados.values() 
+                  if v.get("modo") != "detenido")
+    
+    return jsonify({
+        "status": "ok",
+        "usuarios_registrados": len(usuarios),
+        "monitoreos_activos": activos,
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route("/", methods=["GET"])
+def index():
+    """Página de inicio"""
+    return """
+    <h1>🦅 Sistema de Monitoreo de Vida Silvestre 🐢</h1>
+    <p>Sistema activo y funcionando correctamente.</p>
+    <ul>
+        <li><a href="/health">Ver estado del sistema</a></li>
+    </ul>
+    """
+
+# -----------------------
+# Ejecución
 # -----------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="0.0.0.0", port=port, debug=False)
 
