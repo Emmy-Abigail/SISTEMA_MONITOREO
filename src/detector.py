@@ -2,10 +2,14 @@ import os
 import time
 import json
 import cv2
-import numpy as np
+import base64
 import requests
+import sys
+
+# Agregar directorio raíz al path
+sys.path.append('/home/abigail/SISTEMA_MONITOREO')
+
 from ultralytics import YOLO
-from utils.send_alert import enviar_alerta
 from utils.influx_logger import InfluxLogger
 from dotenv import load_dotenv
 
@@ -19,6 +23,7 @@ load_dotenv(os.path.join(PROJECT_DIR, '.env'))
 
 # URL de Railway
 RAILWAY_URL = os.environ.get("RAILWAY_URL", "https://web-production-9eaa.up.railway.app")
+ALERTA_KEY = os.environ.get("ALERTA_KEY", "")
 
 def get_mode():
     """Consulta Railway para saber qué especie monitorear"""
@@ -108,19 +113,68 @@ def liberar_camara(cap, tipo_camara):
         cap.release()
     cv2.destroyAllWindows()
 
+def enviar_alerta_a_railway(especie, cantidad, frame, es_amenaza=False):
+    """
+    ✅ Envía la alerta a Railway con imagen en base64
+    Railway se encarga de distribuir a todos los usuarios vía Twilio
+    """
+    try:
+        # Convertir frame a base64
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        imagen_base64 = base64.b64encode(buffer).decode('utf-8')
+        imagen_url = f"data:image/jpeg;base64,{imagen_base64}"
+        
+        # Payload para Railway
+        payload = {
+            "especie": especie,
+            "cantidad": cantidad,
+            "imagen": imagen_url,
+            "es_amenaza": es_amenaza
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        if ALERTA_KEY:
+            headers["X-ALERTA-KEY"] = ALERTA_KEY
+        
+        # Enviar a Railway
+        response = requests.post(
+            f"{RAILWAY_URL}/alerta",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ Alerta enviada a Railway: {result.get('enviados', [])} usuarios notificados")
+            return True
+        else:
+            print(f"⚠️ Error en Railway: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error enviando alerta a Railway: {e}")
+        return False
+
 def main():
     especie_actual = None
     model = None
     cap, tipo_camara = iniciar_camara()
+    
+    # ✅ MANTENER InfluxDB para dashboard
     influx = InfluxLogger()
     
     ultimo_envio = 0
-    tiempo_espera = 20
+    tiempo_espera = 20  # Segundos entre alertas
     
     frame_count = 0
-    check_railway_every = 30
+    check_railway_every = 30  # Consultar Railway cada 30 frames
     
     print(f"📹 Usando cámara tipo: {tipo_camara}")
+    print(f"🌐 Conectado a Railway: {RAILWAY_URL}")
     
     try:
         while True:
@@ -161,7 +215,7 @@ def main():
             
             annotated = results[0].plot()
             
-            # Mostrar ventana con título dinámico
+            # Mostrar ventana SOLO si hay display (comentar en modo headless)
             cv2.imshow(f"Monitoreo: {especie_actual.capitalize()}", annotated)
             
             # PROCESAR DETECCIONES
@@ -183,21 +237,27 @@ def main():
                     # Enviar alerta por cada tipo detectado
                     for nombre_especie, count in especies_detectadas.items():
                         if es_amenaza:
-                            print(f"⚠️ INVASOR DETECTADO: {count} {nombre_especie}")
+                            print(f"🚨 INVASOR DETECTADO: {count} {nombre_especie}")
                         else:
-                            print(f"🚨 Detectados {count} {nombre_especie}")
+                            print(f"✅ Detectados {count} {nombre_especie}")
                         
-                        # Enviar alerta
-                        enviar_alerta(nombre_especie, count, frame, es_amenaza=es_amenaza)
+                        # ✅ 1. ENVIAR ALERTA A RAILWAY (distribución WhatsApp)
+                        enviar_alerta_a_railway(
+                            nombre_especie, 
+                            count, 
+                            frame, 
+                            es_amenaza=es_amenaza
+                        )
                         
-                        # Registrar en InfluxDB
+                        # ✅ 2. REGISTRAR EN INFLUXDB (dashboard)
                         confianza = float(boxes.conf.mean()) if len(boxes.conf) > 0 else 0.0
                         influx.log_detection(nombre_especie, count, confianza)
                     
                     ultimo_envio = time.time()
             
+            # Detectar tecla 'q' solo si hay display (comentar en modo headless)
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+                 break
     
     finally:
         liberar_camara(cap, tipo_camara)

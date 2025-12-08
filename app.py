@@ -1,11 +1,8 @@
 import os
 import json
-import subprocess
-import sys
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-import tempfile
 
 app = Flask(__name__)
 
@@ -30,14 +27,8 @@ for f in [USUARIOS_FILE, ESTADOS_FILE]:
 # -----------------------
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+1415xxxxxxx
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
 ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
-
-# -----------------------
-# Estado del detector
-# -----------------------
-DETECTOR_RUNNING = False
-DETECTOR_PATH = os.path.join(BASE_DIR, "detector.py")
 
 # -----------------------
 # Funciones auxiliares
@@ -77,16 +68,6 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
         app.logger.error(f"Error enviando WhatsApp: {e}")
         return False
 
-def iniciar_detector():
-    """Lanza detector.py en segundo plano si no está corriendo"""
-    global DETECTOR_RUNNING
-    if not DETECTOR_RUNNING:
-        subprocess.Popen([sys.executable, DETECTOR_PATH])
-        DETECTOR_RUNNING = True
-        app.logger.info("✅ detector.py iniciado en segundo plano")
-    else:
-        app.logger.info("⚠️ detector.py ya está corriendo, no se inicia otra instancia")
-
 # -----------------------
 # Endpoints
 # -----------------------
@@ -121,26 +102,23 @@ def whatsapp_reply():
         msg.body(texto)
         return str(resp)
 
-    # Elección de especie
+    # Elección de especie - AHORA GUARDA GLOBALMENTE
     if incoming_msg in ["1", "tortugas"]:
-        estados[from_number] = "tortugas"
+        estados["especie_activa"] = "tortugas"  # ✅ Global, no por usuario
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido 🐢 *Tortugas*. El sistema iniciará la detección automáticamente.")
-        iniciar_detector()
+        msg.body("✅ Has elegido 🐢 *Tortugas*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
         return str(resp)
 
     if incoming_msg in ["2", "gaviotines"]:
-        estados[from_number] = "gaviotines"
+        estados["especie_activa"] = "gaviotines"
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido 🐦 *Gaviotines*. El sistema iniciará la detección automáticamente.")
-        iniciar_detector()
+        msg.body("✅ Has elegido 🐦 *Gaviotines*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
         return str(resp)
     
     if incoming_msg in ["3", "invasores"]:
-        estados[from_number] = "invasores"
+        estados["especie_activa"] = "invasores"
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido ⚠️ *Invasores*. El sistema iniciará la detección automáticamente.")
-        iniciar_detector()
+        msg.body("✅ Has elegido ⚠️ *Invasores*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
         return str(resp)
 
     msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones.")
@@ -151,17 +129,20 @@ def whatsapp_reply():
 def obtener_configuracion():
     """
     La Raspberry Pi consulta este endpoint para saber qué especie monitorear.
-    Devuelve {"mode": "tortugas"} o {"mode": "gaviotines"}.
+    Devuelve la especie GLOBAL activa.
     """
     estados = cargar_json(ESTADOS_FILE)
-    mode = list(estados.values())[-1] if estados else "tortugas"
+    mode = estados.get("especie_activa", "tortugas")  # ✅ Especie global
     return jsonify({"mode": mode})
+
 
 @app.route("/alerta", methods=["POST"])
 def recibir_alerta():
     """
-    Endpoint usado por detector.py para notificar detecciones.
+    Endpoint usado por detector.py (Raspberry Pi) para notificar detecciones.
+    Railway recibe la alerta y envía a TODOS los usuarios registrados.
     """
+    # Verificar llave secreta
     if ALERTA_KEY:
         header_key = request.headers.get("X-ALERTA-KEY", "")
         if header_key != ALERTA_KEY:
@@ -170,35 +151,60 @@ def recibir_alerta():
 
     try:
         data = request.get_json(force=True)
-        especie = data.get("especie", "tortugas")
+        especie = data.get("especie", "desconocida")
         cantidad = data.get("cantidad", 1)
         imagen_url = data.get("imagen", None)
+        es_amenaza = data.get("es_amenaza", False)
     except Exception as e:
         app.logger.error(f"Error parsing JSON en /alerta: {e}")
         return jsonify({"error": "bad request"}), 400
 
+    # Obtener usuarios registrados
     usuarios = cargar_json(USUARIOS_FILE)
     if not usuarios:
         app.logger.info("No hay usuarios registrados.")
         return jsonify({"status": "no_users"}), 200
 
-    texto = f"🚨 *DETECCIÓN AUTOMÁTICA*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
+    # Construir mensaje según tipo de detección
+    if es_amenaza:
+        emoji = "🚨"
+        titulo = "ALERTA DE INVASOR"
+    else:
+        emoji = "✅"
+        titulo = "DETECCIÓN CONFIRMADA"
+
+    texto = f"{emoji} *{titulo}*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
+    
     if imagen_url:
         texto += "\n\n📸 Imagen adjunta."
 
     enviados = []
     fallos = []
 
-    # Enviar mensaje a todos los usuarios
+    # Enviar mensaje a TODOS los usuarios registrados
     for numero in usuarios.keys():
         try:
-            enviar_whatsapp(numero, texto, media_url=imagen_url)
-            enviados.append(numero)
+            success = enviar_whatsapp(numero, texto, media_url=imagen_url)
+            if success:
+                enviados.append(numero)
+            else:
+                fallos.append(numero)
         except Exception as e:
             app.logger.error(f"Error enviando a {numero}: {e}")
             fallos.append(numero)
 
+    app.logger.info(f"Alerta enviada: {len(enviados)} exitosos, {len(fallos)} fallos")
     return jsonify({"status": "ok", "enviados": enviados, "fallos": fallos}), 200
+
+
+@app.route("/", methods=["GET"])
+def home():
+    """Endpoint de verificación"""
+    return jsonify({
+        "status": "online",
+        "service": "Sistema de Monitoreo de Especies Marinas"
+    })
+
 
 # -----------------------
 # Run
