@@ -42,11 +42,15 @@ def get_mode():
         return "tortugas"
 
 def cargar_modelo(mode):
-    """Carga el modelo YOLO"""
+    """Carga el modelo YOLO según el modo seleccionado"""
     modelo_path = os.path.join(MODELS_DIR, f"{mode}.pt")
     
     if not os.path.exists(modelo_path):
         print(f"❌ ERROR: No se encontró el modelo: {modelo_path}")
+        print(f"📂 Modelos disponibles en {MODELS_DIR}:")
+        for f in os.listdir(MODELS_DIR):
+            if f.endswith('.pt'):
+                print(f"   - {f}")
         exit()
     
     print(f"📦 Cargando modelo: {mode}")
@@ -107,12 +111,10 @@ def liberar_camara(cap, tipo_camara):
 def main():
     especie_actual = None
     model = None
-    modelo_invasores = None  # Nuevo: modelo de invasores
     cap, tipo_camara = iniciar_camara()
     influx = InfluxLogger()
     
     ultimo_envio = 0
-    ultimo_envio_invasores = 0  # Nuevo: control de envío para invasores
     tiempo_espera = 20
     
     frame_count = 0
@@ -120,19 +122,13 @@ def main():
     
     print(f"📹 Usando cámara tipo: {tipo_camara}")
     
-    # Cargar modelo de invasores (siempre activo)
-    try:
-        modelo_invasores = cargar_modelo("invasores")
-        print("🚨 Modelo de invasores cargado y activo")
-    except Exception as e:
-        print(f"⚠️ No se pudo cargar modelo de invasores: {e}")
-    
     try:
         while True:
-            # Solo consultar Railway cada 30 frames
+            # Consultar Railway cada 30 frames para ver si cambió el modo
             if frame_count % check_railway_every == 0:
                 especie = get_mode()
                 
+                # Solo recargar modelo si cambió el modo
                 if especie != especie_actual:
                     print(f"\n🔄 Nuevo modo: {especie}")
                     especie_actual = especie
@@ -151,7 +147,7 @@ def main():
                 scale = 640 / width
                 frame = cv2.resize(frame, (640, int(height * scale)))
             
-            # DETECCIÓN PRINCIPAL (tortugas o gaviotines)
+            # DETECCIÓN según el modo actual
             results = model.predict(
                 source=frame,
                 conf=0.75,
@@ -165,60 +161,40 @@ def main():
             
             annotated = results[0].plot()
             
-            # DETECCIÓN DE INVASORES (en paralelo)
-            invasores_detectados = []
-            if modelo_invasores:
-                results_invasores = modelo_invasores.predict(
-                    source=frame,
-                    conf=0.70,  # Confianza ligeramente menor para invasores
-                    iou=0.5,
-                    show=False,
-                    verbose=False,
-                    imgsz=640,
-                    device='cpu',
-                    half=False
-                )
-                
-                boxes_invasores = results_invasores[0].boxes
-                if len(boxes_invasores) > 0:
-                    # Obtener nombres de las clases detectadas
-                    for box in boxes_invasores:
-                        class_id = int(box.cls[0])
-                        class_name = modelo_invasores.names[class_id]
-                        invasores_detectados.append(class_name)
-                    
-                    # Dibujar detecciones de invasores en el frame
-                    annotated = results_invasores[0].plot(img=annotated)
+            # Mostrar ventana con título dinámico
+            cv2.imshow(f"Monitoreo: {especie_actual.capitalize()}", annotated)
             
-            cv2.imshow(f"Monitoreo de {especie_actual.capitalize()}", annotated)
-            
-            # PROCESAR DETECCIONES PRINCIPALES
+            # PROCESAR DETECCIONES
             boxes = results[0].boxes
             cantidad = len(boxes)
             
             if cantidad > 0:
                 if time.time() - ultimo_envio > tiempo_espera:
-                    print(f"🚨 Detectados {cantidad} {especie_actual}")
-                    enviar_alerta(especie_actual, cantidad, frame)
+                    # Determinar si es amenaza (invasores)
+                    es_amenaza = (especie_actual == "invasores")
+                    
+                    # Obtener nombres de las clases detectadas
+                    especies_detectadas = {}
+                    for box in boxes:
+                        class_id = int(box.cls[0])
+                        class_name = model.names[class_id]
+                        especies_detectadas[class_name] = especies_detectadas.get(class_name, 0) + 1
+                    
+                    # Enviar alerta por cada tipo detectado
+                    for nombre_especie, count in especies_detectadas.items():
+                        if es_amenaza:
+                            print(f"⚠️ INVASOR DETECTADO: {count} {nombre_especie}")
+                        else:
+                            print(f"🚨 Detectados {count} {nombre_especie}")
+                        
+                        # Enviar alerta
+                        enviar_alerta(nombre_especie, count, frame, es_amenaza=es_amenaza)
+                        
+                        # Registrar en InfluxDB
+                        confianza = float(boxes.conf.mean()) if len(boxes.conf) > 0 else 0.0
+                        influx.log_detection(nombre_especie, count, confianza)
+                    
                     ultimo_envio = time.time()
-                    confianza = float(boxes.conf.mean()) if len(boxes.conf) > 0 else 0.0
-                    influx.log_detection(especie_actual, cantidad, confianza)
-            
-            # PROCESAR DETECCIONES DE INVASORES
-            if invasores_detectados and time.time() - ultimo_envio_invasores > tiempo_espera:
-                # Contar cada tipo de invasor
-                for tipo_invasor in set(invasores_detectados):
-                    count = invasores_detectados.count(tipo_invasor)
-                    print(f"⚠️ INVASOR DETECTADO: {count} {tipo_invasor}")
-                    
-                    # Enviar a InfluxDB con species diferente
-                    confianza_invasor = float(boxes_invasores.conf.mean()) if len(boxes_invasores.conf) > 0 else 0.0
-                    influx.log_detection(tipo_invasor, count, confianza_invasor)
-                    
-                    # Enviar alerta por WhatsApp
-                    enviar_alerta(f"INVASOR: {tipo_invasor}", count, frame)
-                
-                ultimo_envio_invasores = time.time()
             
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -226,6 +202,7 @@ def main():
     finally:
         liberar_camara(cap, tipo_camara)
         influx.close()
+        print("✅ Conexión con InfluxDB cerrada")
         print("👋 Sistema detenido.")
 
 if __name__ == "__main__":
