@@ -93,17 +93,18 @@ def whatsapp_reply():
         return str(resp)
 
     # Menú principal
+    # Menú
     if incoming_msg in ["menu", "hola", "inicio"]:
         texto = (
             "🟢 *Monitoreo de especies*\n\n"
             "¿Qué deseas monitorear hoy?\n"
             "1️⃣ Tortugas 🐢\n"
-            "2️⃣ Gaviotines 🐦\n\n"
-            "Responde con *1* o *2*."
+            "2️⃣ Gaviotines 🐦\n"
+            "3️⃣ Invasores ⚠️\n\n"
+            "Responde con *1*, *2* o *3*."
         )
         msg.body(texto)
         return str(resp)
-
     # Elección de especie
     if incoming_msg in ["1", "tortugas"]:
         estados[from_number] = "tortugas"
@@ -116,9 +117,17 @@ def whatsapp_reply():
         guardar_json(ESTADOS_FILE, estados)
         msg.body("Has elegido 🐦 *Gaviotines*. El sistema iniciará la detección.")
         return str(resp)
+    
+    if incoming_msg in ["3", "invasores"]:
+        estados[from_number] = "invasores"
+        guardar_json(ESTADOS_FILE, estados)
+        msg.body("Has elegido ⚠️ *Invasores*. El sistema iniciará la detección de amenazas.")
+        return str(resp)
 
     msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones.")
     return str(resp)
+
+
 
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
