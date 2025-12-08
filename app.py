@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
@@ -23,12 +24,17 @@ for f in [USUARIOS_FILE, ESTADOS_FILE]:
             json.dump({}, file)
 
 # -----------------------
-# Variables de entorno
+# Variables de entorno Twilio
 # -----------------------
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+1415xxxxxxx
 ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
+
+# -----------------------
+# Variables del detector
+# -----------------------
+DETECTOR_PROCESS = None  # Mantiene el proceso en ejecución
 
 # -----------------------
 # Funciones auxiliares
@@ -50,15 +56,17 @@ def guardar_json(ruta, data):
         app.logger.error(f"Error guardando JSON {ruta}: {e}")
 
 def enviar_whatsapp(numero_destino, texto, media_url=None):
-    """
-    Envía WhatsApp usando Twilio REST API
-    """
+    """Envía WhatsApp usando Twilio REST API"""
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         app.logger.error("Credenciales Twilio no configuradas")
         return False
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
+        msg_params = {
+            "from_": TWILIO_WHATSAPP_FROM,
+            "body": texto,
+            "to": numero_destino
+        }
         if media_url:
             msg_params["media_url"] = [media_url]
         message = client.messages.create(**msg_params)
@@ -68,9 +76,34 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
         app.logger.error(f"Error enviando WhatsApp: {e}")
         return False
 
+def iniciar_detector():
+    """Inicia detector.py si no está corriendo"""
+    global DETECTOR_PROCESS
+    if DETECTOR_PROCESS is None or DETECTOR_PROCESS.poll() is not None:
+        DETECTOR_PROCESS = subprocess.Popen(
+            ["python3", os.path.join(BASE_DIR, "src", "detector.py")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        app.logger.info("✅ detector.py iniciado")
+    else:
+        app.logger.info("⚠️ detector.py ya está corriendo")
+
+def detener_detector():
+    """Detiene el proceso detector.py"""
+    global DETECTOR_PROCESS
+    if DETECTOR_PROCESS and DETECTOR_PROCESS.poll() is None:
+        DETECTOR_PROCESS.terminate()
+        DETECTOR_PROCESS.wait()
+        DETECTOR_PROCESS = None
+        app.logger.info("🛑 detector.py detenido")
+        return True
+    return False
+
 # -----------------------
 # Endpoints
 # -----------------------
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     from_number = request.values.get("From", "")
@@ -89,6 +122,14 @@ def whatsapp_reply():
         msg.body("🟢 *Registro exitoso*\nTu número ha sido registrado y ahora recibirás alertas.")
         return str(resp)
 
+    # Comando stop
+    if incoming_msg in ["stop", "detener"]:
+        if detener_detector():
+            msg.body("🛑 Sistema de detección detenido correctamente.")
+        else:
+            msg.body("⚠️ El sistema no estaba en ejecución.")
+        return str(resp)
+
     # Menú principal
     if incoming_msg in ["menu", "hola", "inicio"]:
         texto = (
@@ -102,47 +143,37 @@ def whatsapp_reply():
         msg.body(texto)
         return str(resp)
 
-    # Elección de especie - AHORA GUARDA GLOBALMENTE
-    if incoming_msg in ["1", "tortugas"]:
-        estados["especie_activa"] = "tortugas"  # ✅ Global, no por usuario
+    # Elección de especie
+    especie_map = {
+        "1": "tortugas",
+        "tortugas": "tortugas",
+        "2": "gaviotines",
+        "gaviotines": "gaviotines",
+        "3": "invasores",
+        "invasores": "invasores"
+    }
+
+    especie_elegida = especie_map.get(incoming_msg)
+    if especie_elegida:
+        estados[from_number] = especie_elegida
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("✅ Has elegido 🐢 *Tortugas*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
+        msg.body(f"Has elegido *{especie_elegida.capitalize()}*. El sistema iniciará la detección.")
+        iniciar_detector()
         return str(resp)
 
-    if incoming_msg in ["2", "gaviotines"]:
-        estados["especie_activa"] = "gaviotines"
-        guardar_json(ESTADOS_FILE, estados)
-        msg.body("✅ Has elegido 🐦 *Gaviotines*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
-        return str(resp)
-    
-    if incoming_msg in ["3", "invasores"]:
-        estados["especie_activa"] = "invasores"
-        guardar_json(ESTADOS_FILE, estados)
-        msg.body("✅ Has elegido ⚠️ *Invasores*.\n\nLa Raspberry Pi detectará automáticamente cuando consulte el sistema.")
-        return str(resp)
-
-    msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones.")
+    msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones o *stop* para detener el detector.")
     return str(resp)
-
 
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
-    """
-    La Raspberry Pi consulta este endpoint para saber qué especie monitorear.
-    Devuelve la especie GLOBAL activa.
-    """
+    """La Raspberry Pi consulta este endpoint para saber qué especie monitorear."""
     estados = cargar_json(ESTADOS_FILE)
-    mode = estados.get("especie_activa", "tortugas")  # ✅ Especie global
+    mode = list(estados.values())[-1] if estados else "tortugas"
     return jsonify({"mode": mode})
-
 
 @app.route("/alerta", methods=["POST"])
 def recibir_alerta():
-    """
-    Endpoint usado por detector.py (Raspberry Pi) para notificar detecciones.
-    Railway recibe la alerta y envía a TODOS los usuarios registrados.
-    """
-    # Verificar llave secreta
+    """Endpoint usado por detector.py para notificar detecciones."""
     if ALERTA_KEY:
         header_key = request.headers.get("X-ALERTA-KEY", "")
         if header_key != ALERTA_KEY:
@@ -151,60 +182,33 @@ def recibir_alerta():
 
     try:
         data = request.get_json(force=True)
-        especie = data.get("especie", "desconocida")
+        especie = data.get("especie", "tortugas")
         cantidad = data.get("cantidad", 1)
         imagen_url = data.get("imagen", None)
-        es_amenaza = data.get("es_amenaza", False)
     except Exception as e:
         app.logger.error(f"Error parsing JSON en /alerta: {e}")
         return jsonify({"error": "bad request"}), 400
 
-    # Obtener usuarios registrados
     usuarios = cargar_json(USUARIOS_FILE)
     if not usuarios:
         app.logger.info("No hay usuarios registrados.")
         return jsonify({"status": "no_users"}), 200
 
-    # Construir mensaje según tipo de detección
-    if es_amenaza:
-        emoji = "🚨"
-        titulo = "ALERTA DE INVASOR"
-    else:
-        emoji = "✅"
-        titulo = "DETECCIÓN CONFIRMADA"
-
-    texto = f"{emoji} *{titulo}*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
-    
+    texto = f"🚨 *DETECCIÓN AUTOMÁTICA*\n\nEspecie: *{especie}*\nCantidad: *{cantidad}*"
     if imagen_url:
         texto += "\n\n📸 Imagen adjunta."
 
     enviados = []
     fallos = []
 
-    # Enviar mensaje a TODOS los usuarios registrados
+    # Enviar mensaje a todos los usuarios
     for numero in usuarios.keys():
-        try:
-            success = enviar_whatsapp(numero, texto, media_url=imagen_url)
-            if success:
-                enviados.append(numero)
-            else:
-                fallos.append(numero)
-        except Exception as e:
-            app.logger.error(f"Error enviando a {numero}: {e}")
+        if enviar_whatsapp(numero, texto, media_url=imagen_url):
+            enviados.append(numero)
+        else:
             fallos.append(numero)
 
-    app.logger.info(f"Alerta enviada: {len(enviados)} exitosos, {len(fallos)} fallos")
     return jsonify({"status": "ok", "enviados": enviados, "fallos": fallos}), 200
-
-
-@app.route("/", methods=["GET"])
-def home():
-    """Endpoint de verificación"""
-    return jsonify({
-        "status": "online",
-        "service": "Sistema de Monitoreo de Especies Marinas"
-    })
-
 
 # -----------------------
 # Run
@@ -212,4 +216,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
