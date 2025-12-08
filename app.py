@@ -24,18 +24,19 @@ for f in [USUARIOS_FILE, ESTADOS_FILE]:
             json.dump({}, file)
 
 # -----------------------
-# Variables de entorno Twilio
+# Variables de entorno
 # -----------------------
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+1415xxxxxxx
-ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
+ALERTA_KEY = os.environ.get("ALERTA_KEY")
+RAILWAY_URL = os.environ.get("RAILWAY_URL")  # URL de tu servidor en Railway
 
 # -----------------------
 # Variables del detector
 # -----------------------
-DETECTOR_PROCESS = None  # Mantiene el proceso en ejecución
-ULTIMA_ESPECIE = None    # Para saber si cambiar modelo
+DETECTOR_PROCESS = None
+ULTIMA_ESPECIE = None
 
 # -----------------------
 # Funciones auxiliares
@@ -86,7 +87,7 @@ def iniciar_detector(especie):
             ["python3", os.path.join(BASE_DIR, "src", "detector.py")],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env={**os.environ, "ESPECIE_INICIAL": especie}  # pasar especie inicial
+            env={**os.environ, "ESPECIE_INICIAL": especie, "RAILWAY_URL": RAILWAY_URL}
         )
         ULTIMA_ESPECIE = especie
         app.logger.info(f"✅ detector.py iniciado con especie: {especie}")

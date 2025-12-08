@@ -1,19 +1,16 @@
 import os
 import time
-import json
 import cv2
 import base64
+import json
 import requests
-import sys
-
-# Agregar directorio raíz al path
-sys.path.append('/home/abigail/SISTEMA_MONITOREO')
-
 from ultralytics import YOLO
 from utils.influx_logger import InfluxLogger
 from dotenv import load_dotenv
 
+# -----------------------
 # CONFIGURACIÓN
+# -----------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 MODELS_DIR = os.path.join(PROJECT_DIR, "modelos")
@@ -21,191 +18,148 @@ MODELS_DIR = os.path.join(PROJECT_DIR, "modelos")
 # Cargar variables de entorno
 load_dotenv(os.path.join(PROJECT_DIR, '.env'))
 
-# URL de Railway
-RAILWAY_URL = os.environ.get("RAILWAY_URL", "https://web-production-9eaa.up.railway.app")
+# URL del servidor Flask (Railway)
+RAILWAY_URL = os.environ.get("RAILWAY_URL")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "")
 
+# -----------------------
+# Funciones
+# -----------------------
 def get_mode():
-    """Consulta Railway para saber qué especie monitorear"""
+    """Consulta el servidor para obtener la especie actual"""
     try:
-        response = requests.get(f"{RAILWAY_URL}/config", timeout=10)
+        response = requests.get(f"{RAILWAY_URL}/config", timeout=5)
         if response.status_code == 200:
             data = response.json()
-            mode = data.get("mode", "tortugas")
-            print(f"✅ Modo obtenido de Railway: {mode}")
-            return mode
+            mode = data.get("mode", None)
+            if mode:
+                return mode
     except Exception as e:
-        print(f"⚠️ Error consultando Railway: {e}")
-    
-    # Fallback local
-    try:
-        config_path = os.path.join(PROJECT_DIR, "data", "config.json")
-        with open(config_path, "r") as f:
-            data = json.load(f)
-        return data.get("mode", "tortugas")
-    except:
-        return "tortugas"
+        print(f"⚠️ No se pudo consultar el servidor: {e}")
+    return None
 
-def cargar_modelo(mode):
-    """Carga el modelo YOLO según el modo seleccionado"""
-    modelo_path = os.path.join(MODELS_DIR, f"{mode}.pt")
+def cargar_modelo(especie):
+    modelo_path = os.path.join(MODELS_DIR, f"{especie}.pt")
     if not os.path.exists(modelo_path):
-        print(f"❌ ERROR: No se encontró el modelo: {modelo_path}")
+        print(f"❌ Modelo no encontrado: {modelo_path}")
         exit()
-    print(f"📦 Cargando modelo: {mode}...")
-    model = YOLO(modelo_path)
-    print(f"✅ Modelo {mode} cargado correctamente")
-    return model
+    print(f"📦 Cargando modelo: {especie}")
+    return YOLO(modelo_path)
 
 def iniciar_camara():
-    """Intenta Camera Module CSI o USB"""
-    try:
-        from picamera2 import Picamera2
-        picam2 = Picamera2()
-        config = picam2.create_preview_configuration(
-            main={"size": (640, 480), "format": "RGB888"},
-            buffer_count=2
-        )
-        picam2.configure(config)
-        picam2.start()
-        time.sleep(1)
-        print("🎥 Camera Module CSI iniciada.")
-        return picam2, "picamera"
-    except Exception as e:
-        print(f"⚠️ Camera Module no disponible: {e}")
-
     cap = cv2.VideoCapture(0)
     if cap.isOpened():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        print("🎥 Cámara USB iniciada.")
-        return cap, "usb"
-
-    print("❌ No se pudo acceder a ninguna cámara.")
+        return cap
+    print("❌ No se pudo abrir la cámara")
     exit()
 
-def capturar_frame(cap, tipo_camara):
-    if tipo_camara == "picamera":
-        frame = cap.capture_array()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        return True, frame
-    else:
-        return cap.read()
+def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
+    """Envía alerta al servidor Flask (Railway)"""
+    _, buffer = cv2.imencode('.jpg', frame)
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    payload = {
+        "especie": especie,
+        "cantidad": cantidad,
+        "imagen": f"data:image/jpeg;base64,{img_base64}",
+        "es_amenaza": es_amenaza
+    }
+    headers = {"Content-Type": "application/json"}
+    if ALERTA_KEY:
+        headers["X-ALERTA-KEY"] = ALERTA_KEY
 
-def liberar_camara(cap, tipo_camara):
-    if tipo_camara == "picamera":
-        cap.stop()
-    else:
-        cap.release()
-    cv2.destroyAllWindows()
-
-def enviar_alerta_a_railway(especie, cantidad, frame, es_amenaza=False):
-    """Envía la alerta a Railway con imagen en base64"""
     try:
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        imagen_base64 = base64.b64encode(buffer).decode('utf-8')
-        imagen_url = f"data:image/jpeg;base64,{imagen_base64}"
-        payload = {
-            "especie": especie,
-            "cantidad": cantidad,
-            "imagen": imagen_url,
-            "es_amenaza": es_amenaza
-        }
-        headers = {"Content-Type": "application/json"}
-        if ALERTA_KEY:
-            headers["X-ALERTA-KEY"] = ALERTA_KEY
-
-        response = requests.post(f"{RAILWAY_URL}/alerta", json=payload, headers=headers, timeout=15)
-        if response.status_code == 200:
-            result = response.json()
-            print(f"✅ Alerta enviada a Railway: {len(result.get('enviados', []))} usuarios notificados")
-            return True
-        else:
-            print(f"⚠️ Error en Railway: {response.status_code}")
-            return False
+        r = requests.post(f"{RAILWAY_URL}/alerta", json=payload, headers=headers, timeout=5)
+        if r.status_code == 200:
+            print(f"✅ Alerta enviada: {especie} x{cantidad}")
     except Exception as e:
-        print(f"❌ Error enviando alerta a Railway: {e}")
-        return False
+        print(f"⚠️ Error enviando alerta: {e}")
 
+# -----------------------
+# MAIN LOOP
+# -----------------------
 def main():
-    especie_actual = None
-    model = None
-    cap, tipo_camara = iniciar_camara()
     influx = InfluxLogger()
     ultimo_envio = 0
     tiempo_espera = 20
     frame_count = 0
-    check_railway_every = 30
-
-    print(f"📹 Usando cámara: {tipo_camara}")
-    print(f"🌐 Conectado a Railway: {RAILWAY_URL}")
+    check_server_every = 30  # cada 30 frames revisa si cambió la especie
+    ESPECIE_ACTUAL = None
+    model = None
+    cap = None
 
     try:
         while True:
-            # Revisar el modo cada cierto número de frames
-            if frame_count % check_railway_every == 0:
-                especie = get_mode()
-                if especie == "detener":
-                    print("🛑 Usuario detuvo la detección")
-                    break
-                if especie != especie_actual:
-                    print(f"\n🔄 Nuevo modo: {especie}")
-                    especie_actual = especie
-                    model = cargar_modelo(especie_actual)
-
-            frame_count += 1
-            ret, frame = capturar_frame(cap, tipo_camara)
-            if not ret or frame is None:
-                print("⚠️ Error al capturar frame.")
-                time.sleep(0.1)
+            # Polling al servidor hasta que haya una especie elegida
+            modo = get_mode()
+            if modo is None or modo == "detener":
+                if cap:
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    cap = None
+                    model = None
+                print("⏳ Esperando que el usuario elija una especie...")
+                time.sleep(3)
                 continue
 
-            # Optimizar tamaño
+            if modo != ESPECIE_ACTUAL:
+                ESPECIE_ACTUAL = modo
+                model = cargar_modelo(ESPECIE_ACTUAL)
+                if cap is None:
+                    cap = iniciar_camara()
+
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            frame_count += 1
+
+            # Redimensionar para optimizar
             h, w = frame.shape[:2]
             if w > 640:
                 scale = 640 / w
                 frame = cv2.resize(frame, (640, int(h * scale)))
 
-            # DETECCIÓN
+            # Predicción
             results = model.predict(source=frame, conf=0.75, iou=0.5, show=False, verbose=False, imgsz=640, device='cpu', half=False)
             annotated = results[0].plot()
-            cv2.imshow(f"Monitoreo: {especie_actual.capitalize()} - Presiona 'q' para salir", annotated)
+            cv2.imshow(f"Monitoreo: {ESPECIE_ACTUAL}", annotated)
 
             boxes = results[0].boxes
             cantidad = len(boxes)
             if cantidad > 0 and time.time() - ultimo_envio > tiempo_espera:
-                es_amenaza = (especie_actual == "invasores")
+                es_amenaza = (ESPECIE_ACTUAL == "invasores")
                 especies_detectadas = {}
                 for box in boxes:
                     class_id = int(box.cls[0])
                     class_name = model.names[class_id]
                     especies_detectadas[class_name] = especies_detectadas.get(class_name, 0) + 1
 
-                for nombre_especie, count in especies_detectadas.items():
-                    enviar_alerta_a_railway(nombre_especie, count, frame, es_amenaza=es_amenaza)
+                for nombre, count in especies_detectadas.items():
+                    enviar_alerta(nombre, count, frame, es_amenaza)
                     confianza = float(boxes.conf.mean()) if len(boxes.conf) > 0 else 0.0
-                    influx.log_detection(nombre_especie, count, confianza)
+                    influx.log_detection(nombre, count, confianza)
 
                 ultimo_envio = time.time()
 
+            # Salir con 'q'
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 print("🛑 Usuario detuvo la detección (tecla q)")
                 break
 
     except KeyboardInterrupt:
-        print("\n⚠️ Deteniendo sistema...")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        print("⚠️ Detención manual")
     finally:
-        liberar_camara(cap, tipo_camara)
+        if cap:
+            cap.release()
+        cv2.destroyAllWindows()
         influx.close()
-        print("✅ Conexión con InfluxDB cerrada")
-        print("👋 Sistema detenido.")
+        print("✅ Sistema detenido")
 
 if __name__ == "__main__":
     main()
+
+
+
 
