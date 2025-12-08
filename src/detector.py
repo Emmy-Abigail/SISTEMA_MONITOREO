@@ -8,7 +8,7 @@ from utils.influx_logger import InfluxLogger
 from utils.send_alert import enviar_alerta
 from dotenv import load_dotenv
 
-from picamera2 import Picamera2   # ⭐ NUEVO: Picamera2
+from picamera2 import Picamera2   
 
 # -----------------------
 # CONFIGURACIÓN
@@ -148,6 +148,9 @@ def main():
                 time.sleep(1)
                 continue
 
+            if frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            
             frame_count += 1
 
             # ---------------------------
