@@ -91,7 +91,7 @@ Responde con el número de tu opción o escribe *menu* para ver este mensaje nue
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     """Webhook para recibir mensajes de WhatsApp"""
-    from_number = request.values.get("From", "")
+    from_number = request.values.get("From", "").replace("whatsapp:", "").strip()
     incoming_msg = request.values.get("Body", "").strip().lower()
 
     usuarios = cargar_json(USUARIOS_FILE)
