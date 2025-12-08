@@ -58,11 +58,12 @@ def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
     else:
         emoji_map = {
             "tortugas": "🐢",
-            "gaviotines": "🐦"
+            "gaviotines": "🐦",
+            "invasores": "⚠️"  # AGREGAR ESTA LÍNEA
         }
         emoji = emoji_map.get(especie, "📊")
         mensaje_prefix = f"✅ Detección {emoji}"
-    
+        
     # Notificar a Railway
     try:
         payload = {
