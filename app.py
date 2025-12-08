@@ -90,7 +90,6 @@ Responde con el número de tu opción o escribe *menu* para ver este mensaje nue
 # -----------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    """Webhook para recibir mensajes de WhatsApp"""
     from_number = request.values.get("From", "").replace("whatsapp:", "").strip()
     incoming_msg = request.values.get("Body", "").strip().lower()
 
@@ -100,30 +99,30 @@ def whatsapp_reply():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Comando: join (registro)
-    if incoming_msg.startswith("join"):
+    # ---- 1. Comando: menu / hola / ayuda (debe registrar si no existe) ----
+    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
         if from_number not in usuarios:
             usuarios[from_number] = {
                 "registrado": True,
                 "fecha_registro": datetime.now().isoformat()
             }
             guardar_json(USUARIOS_FILE, usuarios)
-            msg.body(f"✅ *¡Bienvenido al sistema de monitoreo!*\n\n{obtener_menu()}")
-        else:
-            msg.body(f"Ya estás registrado.\n\n{obtener_menu()}")
-        return str(resp)
 
-    # Verificar si el usuario está registrado
-    if from_number not in usuarios:
-        msg.body("Para usar el sistema, primero envía: *join* seguido de tu código.\nEjemplo: join happy-turtle")
-        return str(resp)
-
-    # Comando: menu, hola, inicio
-    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
         msg.body(obtener_menu())
         return str(resp)
 
-    # Comando: detener, stop
+    # ---- 2. Registro automático general ----
+    if from_number not in usuarios:
+        usuarios[from_number] = {
+            "registrado": True,
+            "fecha_registro": datetime.now().isoformat()
+        }
+        guardar_json(USUARIOS_FILE, usuarios)
+
+        msg.body(f"✅ *¡Bienvenido al sistema de monitoreo!*\n\n{obtener_menu()}")
+        return str(resp)
+
+    # ---- 3. Comando: detener ----
     if incoming_msg in ["4", "stop", "detener", "salir"]:
         estado_actual = estados.get(from_number, {}).get("modo")
         
@@ -138,7 +137,7 @@ def whatsapp_reply():
             msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
         return str(resp)
 
-    # Comando: estado
+    # ---- 4. Comando: estado ----
     if incoming_msg in ["5", "estado"]:
         estado = estados.get(from_number, {})
         modo_actual = estado.get("modo", "ninguno")
@@ -146,14 +145,14 @@ def whatsapp_reply():
         if modo_actual and modo_actual != "detenido":
             fecha = estado.get("fecha_cambio", "desconocida")
             msg.body(f"📊 *Estado actual*\n\n"
-                    f"Monitoreando: *{modo_actual.upper()}*\n"
-                    f"Desde: {fecha}\n\n"
-                    f"Envía *4* para detener.")
+                     f"Monitoreando: *{modo_actual.upper()}*\n"
+                     f"Desde: {fecha}\n\n"
+                     f"Envía *4* para detener.")
         else:
             msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
         return str(resp)
 
-    # Mapeo de opciones
+    # ---- 5. Mapeo de opciones ----
     especie_map = {
         "1": "tortugas",
         "tortugas": "tortugas",
@@ -168,28 +167,27 @@ def whatsapp_reply():
     }
 
     especie_elegida = especie_map.get(incoming_msg)
-    
+
     if especie_elegida:
-        # Guardar elección del usuario
         estados[from_number] = {
             "modo": especie_elegida,
             "fecha_cambio": datetime.now().isoformat()
         }
         guardar_json(ESTADOS_FILE, estados)
-        
+
         emojis = {
             "tortugas": "🐢",
             "gaviotines": "🐦",
             "invasores": "⚠️"
         }
         emoji = emojis.get(especie_elegida, "📊")
-        
+
         msg.body(f"{emoji} *Monitoreo de {especie_elegida.upper()} iniciado*\n\n"
-                f"Recibirás alertas automáticas cuando se detecten {especie_elegida}.\n\n"
-                f"Envía *4* o *detener* para parar el monitoreo.")
+                 f"Recibirás alertas automáticas cuando se detecten {especie_elegida}.\n\n"
+                 f"Envía *4* o *detener* para parar el monitoreo.")
         return str(resp)
 
-    # Mensaje no reconocido
+    # ---- 6. Mensaje no reconocido ----
     msg.body(f"❌ No entendí tu mensaje.\n\n{obtener_menu()}")
     return str(resp)
 
