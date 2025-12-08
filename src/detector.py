@@ -14,233 +14,215 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 MODELS_DIR = os.path.join(PROJECT_DIR, "modelos")
 
-# Cargar variables de entorno
-load_dotenv(os.path.join(PROJECT_DIR, '.env'))
+load_dotenv(os.path.join(PROJECT_DIR, ".env"))
 
-# URL del servidor Flask (Railway)
 RAILWAY_URL = os.environ.get("RAILWAY_URL")
 if not RAILWAY_URL:
     print("❌ Error: Variable RAILWAY_URL no configurada")
     exit(1)
 
-ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
+ALERTA_KEY = os.environ.get("ALERTA_KEY", "clave")
 
 # -----------------------
-# Funciones
+# Funciones auxiliares
 # -----------------------
 def get_mode():
-    """Consulta el servidor para obtener la especie actual"""
     try:
-        response = requests.get(f"{RAILWAY_URL}/config", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            mode = data.get("mode", None)
-            return mode
+        r = requests.get(f"{RAILWAY_URL}/config", timeout=5)
+        if r.status_code == 200:
+            return r.json().get("mode", None)
     except Exception as e:
-        print(f"⚠️ No se pudo consultar el servidor: {e}")
+        print(f"⚠️ No se pudo conectar con el servidor: {e}")
     return None
 
+
 def cargar_modelo(especie):
-    """Carga el modelo YOLO correspondiente a la especie"""
     modelo_path = os.path.join(MODELS_DIR, f"{especie}.pt")
     if not os.path.exists(modelo_path):
         print(f"❌ Modelo no encontrado: {modelo_path}")
         return None
+    
     print(f"📦 Cargando modelo: {especie}")
-    return YOLO(modelo_path)
+    try:
+        return YOLO(modelo_path)
+    except Exception as e:
+        print(f"❌ Error cargando modelo {especie}: {e}")
+        return None
+
 
 def iniciar_camara():
-    """Inicia la cámara"""
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("❌ No se pudo abrir la cámara")
+        print("❌ No se pudo iniciar la cámara")
         return None
     
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
-    
+
     print("📹 Cámara iniciada correctamente")
     return cap
+
+
+def liberar_recursos(cap):
+    if cap:
+        cap.release()
+    cv2.destroyAllWindows()
+
 
 # -----------------------
 # MAIN LOOP
 # -----------------------
 def main():
-    """Loop principal de detección"""
-    print("🚀 Iniciando sistema de detección...")
-    
-    # Inicializar logger de InfluxDB
+    print("🚀 Iniciando sistema de monitoreo...")
+
     influx = InfluxLogger()
-    
-    # Variables de control
-    ultimo_envio = 0
-    tiempo_espera = 20  # Segundos entre alertas para evitar spam
-    frame_count = 0
-    check_server_every = 30  # Revisar servidor cada 30 frames
-    
+
     ESPECIE_ACTUAL = None
     model = None
     cap = None
 
+    frame_count = 0
+    check_server_every = 30
+    ultimo_envio = {}
+    cooldown = 20  # segundos por especie
+
     try:
         while True:
-            # Cada N frames, consultar al servidor qué monitorear
+            # ---------------------------------------------------
+            # 1. Consultar servidor periódicamente
+            # ---------------------------------------------------
             if frame_count % check_server_every == 0:
                 modo = get_mode()
-                
-                # Si cambió el modo, actualizar
+
                 if modo != ESPECIE_ACTUAL:
                     print(f"🔄 Cambio de modo: {ESPECIE_ACTUAL} → {modo}")
-                    
-                    # Si es "detenido", liberar recursos
+
+                    # Si el modo es "detenido"
                     if modo is None or modo == "detenido":
-                        if cap:
-                            cap.release()
-                            cv2.destroyAllWindows()
-                            cap = None
-                            model = None
+                        liberar_recursos(cap)
+                        cap = None
+                        model = None
                         ESPECIE_ACTUAL = None
-                        print("⏸️ Monitoreo pausado. Esperando nueva especie...")
-                    else:
-                        # Cargar nuevo modelo
-                        ESPECIE_ACTUAL = modo
-                        model = cargar_modelo(ESPECIE_ACTUAL)
-                        
-                        if model is None:
-                            print(f"❌ No se pudo cargar modelo para {ESPECIE_ACTUAL}")
-                            time.sleep(5)
-                            continue
-                        
-                        # Iniciar cámara si no está activa
-                        if cap is None:
-                            cap = iniciar_camara()
-                            if cap is None:
-                                print("❌ No se pudo iniciar la cámara")
-                                time.sleep(5)
-                                continue
-                        
-                        print(f"✅ Monitoreando: {ESPECIE_ACTUAL}")
-            
-            # Si no hay especie activa, esperar
-            if ESPECIE_ACTUAL is None or ESPECIE_ACTUAL == "detenido":
-                time.sleep(3)
+                        print("⏸️ Sistema pausado. Esperando nueva especie...")
+                        time.sleep(2)
+                        continue
+
+                    # Liberar recursos ANTES de cambiar especie
+                    liberar_recursos(cap)
+                    cap = None
+
+                    # Cargar modelo
+                    model = cargar_modelo(modo)
+                    if model is None:
+                        time.sleep(3)
+                        continue
+
+                    # Activar cámara
+                    cap = iniciar_camara()
+                    if cap is None:
+                        time.sleep(3)
+                        continue
+
+                    ESPECIE_ACTUAL = modo
+                    print(f"✅ Monitoreando: {ESPECIE_ACTUAL}")
+
+            # ---------------------------------------------------
+            # 2. Si no hay especie activa, esperar
+            # ---------------------------------------------------
+            if ESPECIE_ACTUAL is None:
+                time.sleep(1)
                 frame_count = 0
                 continue
-            
-            # Capturar frame
+
+            # ---------------------------------------------------
+            # 3. Leer cámara
+            # ---------------------------------------------------
             ret, frame = cap.read()
             if not ret:
-                print("⚠️ Error al capturar frame")
+                print("⚠️ Error capturando frame")
                 time.sleep(1)
                 continue
-            
+
             frame_count += 1
-            
-            # Redimensionar para optimizar rendimiento
-            h, w = frame.shape[:2]
-            if w > 640:
-                scale = 640 / w
-                frame = cv2.resize(frame, (640, int(h * scale)))
-            
-            # Realizar predicción
+
+            # ---------------------------------------------------
+            # 4. Inferencia YOLO
+            # ---------------------------------------------------
             results = model.predict(
                 source=frame,
-                conf=0.75,  # Confianza mínima
+                conf=0.75,
                 iou=0.5,
                 show=False,
                 verbose=False,
                 imgsz=640,
-                device='cpu',
-                half=False
+                device="cpu"
             )
-            
-            # Dibujar detecciones en el frame
+
             annotated = results[0].plot()
             cv2.imshow(f"Monitoreo: {ESPECIE_ACTUAL}", annotated)
-            
-            # Procesar detecciones
+
             boxes = results[0].boxes
-            cantidad = len(boxes)
+            count = len(boxes)
+
+            # ---------------------------------------------------
+            # 5. Si hay detecciones → enviar alertas
+            # ---------------------------------------------------
+            if count > 0:
+                ahora = time.time()
+                ultimo = ultimo_envio.get(ESPECIE_ACTUAL, 0)
             
-            if cantidad > 0:
-                tiempo_actual = time.time()
-                
-                # Verificar cooldown para evitar spam
-                if tiempo_actual - ultimo_envio > tiempo_espera:
-                    print(f"🔔 ¡Detección! {cantidad} {ESPECIE_ACTUAL} encontrados")
-                    
-                    # Determinar si es amenaza
-                    es_amenaza = (ESPECIE_ACTUAL == "invasores")
-                    
-                    # Agrupar detecciones
-                    # Para tortugas y gaviotines: agrupar todo (tienen 1 sola clase)
-                    # Para invasores: mostrar detalle (perro, persona, vehiculo)
-                    especies_detectadas = {}
-                    confidencias = []
-                    
+                if ahora - ultimo >= cooldown:
+                    print(f"🔔 {count} {ESPECIE_ACTUAL} detectados")
+            
+                    # 🌟 NUEVO: modo invasores → solo enviar "amenaza" sin clasificar
                     if ESPECIE_ACTUAL == "invasores":
-                        # Para invasores, mostrar clase específica
-                        for box in boxes:
-                            class_id = int(box.cls[0])
-                            class_name = model.names[class_id]
-                            conf = float(box.conf[0])
-                            
-                            especies_detectadas[class_name] = especies_detectadas.get(class_name, 0) + 1
-                            confidencias.append(conf)
+                        especies_detectadas = {"amenaza": count}
                     else:
-                        # Para tortugas y gaviotines, usar nombre general
-                        for box in boxes:
-                            conf = float(box.conf[0])
-                            confidencias.append(conf)
-                        
-                        especies_detectadas[ESPECIE_ACTUAL] = cantidad
-                    
-                    # Calcular confianza promedio
-                    confianza_promedio = sum(confidencias) / len(confidencias) if confidencias else 0.0
-                    
-                    # Enviar alerta por cada clase detectada
-                    for nombre_clase, count in especies_detectadas.items():
-                        print(f"📤 Enviando alerta: {nombre_clase} x{count}")
-                        
-                        # Enviar alerta a Railway (que notifica a usuarios)
-                        enviar_alerta(nombre_clase, count, frame, es_amenaza)
-                        
-                        # Registrar en InfluxDB
+                        especies_detectadas = {ESPECIE_ACTUAL: count}
+            
+                    # Enviar alertas
+                    for especie, cantidad in especies_detectadas.items():
+                        enviar_alerta(
+                            especie,
+                            cantidad,
+                            annotated,
+                            ESPECIE_ACTUAL == "invasores"
+                        )
+            
                         influx.log_detection(
-                            species=nombre_clase,
-                            count=count,
-                            confidence=confianza_promedio,
+                            species=especie,
+                            count=cantidad,
+                            confidence=0.9,
                             location="raspberry_pi_5"
                         )
-                    
-                    ultimo_envio = tiempo_actual
-                    print(f"✅ Alertas enviadas. Próxima en {tiempo_espera}s")
             
-            # Salir con 'q'
+                    ultimo_envio[ESPECIE_ACTUAL] = ahora
+                    print(f"📤 Alertas enviadas. Cooldown: {cooldown}s")
+
+
+            # ---------------------------------------------------
+            # 6. Salir con tecla Q
+            # ---------------------------------------------------
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                print("🛑 Usuario detuvo la detección (tecla q)")
+                print("🛑 Sistema detenido manualmente (q)")
                 break
-            
-            # Pequeña pausa para no saturar CPU
-            time.sleep(0.1)
+
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
-        print("\n⚠️ Detención manual (Ctrl+C)")
+        print("\n🛑 Sistema detenido por Ctrl+C")
     except Exception as e:
-        print(f"❌ Error en el loop principal: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error crítico: {e}")
     finally:
-        # Limpiar recursos
-        if cap:
-            cap.release()
-        cv2.destroyAllWindows()
+        liberar_recursos(cap)
         influx.close()
-        print("✅ Sistema detenido correctamente")
+        print("✅ Sistema detenido correctamente.")
+
 
 if __name__ == "__main__":
     main()
+
 
 
 

@@ -16,15 +16,6 @@ RAILWAY_URL = os.environ.get("RAILWAY_URL")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
 
 def guardar_imagen(frame):
-    """
-    Guarda imagen localmente
-    
-    Args:
-        frame: Frame de OpenCV
-    
-    Returns:
-        str: Ruta del archivo guardado
-    """
     fecha = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     nombre = f"deteccion_{fecha}.jpg"
     ruta = os.path.join(IMAGES_DIR, nombre)
@@ -35,59 +26,49 @@ def guardar_imagen(frame):
 def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
     """
     Envía alerta a Railway, que se encarga de notificar a todos los usuarios.
-    
-    Args:
-        especie (str): Tipo detectado (tortugas, gaviotines, perro, persona, vehiculo)
-        cantidad (int): Número detectados
-        frame: Imagen capturada (OpenCV frame)
-        es_amenaza (bool): True si es una amenaza (invasores)
-    
-    Returns:
-        bool: True si se envió correctamente
     """
+
     if not RAILWAY_URL:
         print("❌ Error: RAILWAY_URL no configurada")
         return False
     
-    print(f"📸 Guardando imagen de {especie}...")
+    # Guardar imagen
+    print(f"📸 Guardando captura...")
     ruta_img = guardar_imagen(frame)
     
     print("⬆️ Subiendo imagen a GitHub...")
     url_imagen = subir_a_github(ruta_img)
     
     if not url_imagen:
-        print("❌ Error: no se pudo subir la imagen a GitHub")
+        print("❌ Error al subir imagen a GitHub")
         return False
     
-    # Determinar tipo de alerta
-    tipo_alerta = "amenaza" if es_amenaza else "deteccion"
-    
-    # Emojis y mensajes personalizados
+    # ============================
+    #  MODO AMENAZA (SIN CLASIFICAR)
+    # ============================
     if es_amenaza:
-        emoji_map = {
-            "perros": "🐕",
-            "perro": "🐕",
-            "personas": "👤",
-            "persona": "👤",
-            "vehiculos": "🚗",
-            "vehiculo": "🚗",
-            "invasores": "⚠️"
-        }
-        emoji = emoji_map.get(especie.lower(), "⚠️")
-        mensaje_prefix = f"🚨 *ALERTA DE AMENAZA* {emoji}"
+        mensaje_prefix = "🚨 *ALERTA DE AMENAZA* ⚠️"
+        especie_final = "amenaza"   # se envía como "amenaza" genérica
+        tipo_alerta = "amenaza"
+    
+    # ============================
+    #  MODO DETECCIÓN NORMAL
+    # ============================
     else:
         emoji_map = {
             "tortugas": "🐢",
             "tortuga": "🐢",
             "gaviotines": "🐦",
-            "gaviotin": "🐦"
+            "gaviotin": "🐦",
         }
         emoji = emoji_map.get(especie.lower(), "📊")
         mensaje_prefix = f"✅ *Detección* {emoji}"
+        especie_final = especie
+        tipo_alerta = "deteccion"
     
-    # Preparar payload
+    # Payload enviado a Railway
     payload = {
-        "especie": especie,
+        "especie": especie_final,
         "cantidad": cantidad,
         "imagen": url_imagen,
         "tipo": tipo_alerta,
@@ -99,7 +80,6 @@ def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
         "Content-Type": "application/json"
     }
     
-    # Enviar a Railway
     try:
         response = requests.post(
             f"{RAILWAY_URL}/alerta",
@@ -114,30 +94,20 @@ def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
             print(f"✅ Alerta enviada a Railway: {enviados} usuarios notificados")
             return True
         else:
-            print(f"⚠️ Railway respondió con código: {response.status_code}")
+            print(f"⚠️ Railway respondió: {response.status_code}")
             print(f"   Respuesta: {response.text}")
             return False
     
-    except requests.exceptions.Timeout:
-        print("❌ Timeout al conectar con Railway")
-        return False
-    except requests.exceptions.ConnectionError:
-        print("❌ Error de conexión con Railway")
-        return False
     except Exception as e:
         print(f"❌ Error al notificar a Railway: {e}")
         return False
 
+
+# Limpieza de imágenes antiguas
 def limpiar_imagenes_antiguas(dias=7):
-    """
-    Elimina imágenes locales más antiguas de X días
-    
-    Args:
-        dias (int): Días de antigüedad máxima
-    """
     try:
         import time
-        limite = time.time() - (dias * 24 * 60 * 60)
+        limite = time.time() - (dias * 86400)
         eliminadas = 0
         
         for archivo in os.listdir(IMAGES_DIR):
@@ -149,47 +119,18 @@ def limpiar_imagenes_antiguas(dias=7):
         
         if eliminadas > 0:
             print(f"🗑️ Limpieza: {eliminadas} imágenes antiguas eliminadas")
-        
+    
     except Exception as e:
         print(f"⚠️ Error al limpiar imágenes: {e}")
 
 
-# ============================================
-# TEST - Ejecutar con: python utils/send_alert.py
-# ============================================
 if __name__ == "__main__":
-    print("🧪 TEST de send_alert.py")
-    print("=" * 50)
-    
-    # Verificar configuración
-    if not RAILWAY_URL:
-        print("❌ RAILWAY_URL no está configurada")
-        print("   Configúrala en tu .env:")
-        print("   RAILWAY_URL=https://tu-app.up.railway.app")
-        exit(1)
-    
-    print(f"✅ RAILWAY_URL: {RAILWAY_URL}")
-    print(f"✅ ALERTA_KEY: {'*' * len(ALERTA_KEY)}")
-    
-    # Crear imagen de prueba
+    print("🧪 Ejecutando TEST send_alert.py")
     import numpy as np
-    print("\n📸 Creando imagen de prueba...")
-    frame_prueba = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(frame_prueba, "TEST - Tortuga detectada", 
-               (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 
-               1, (0, 255, 0), 2)
-    
-    # Probar envío
-    print("\n📤 Probando envío de alerta...")
-    resultado = enviar_alerta("tortugas", 1, frame_prueba, es_amenaza=False)
-    
-    if resultado:
-        print("\n✅ ¡TEST EXITOSO!")
-        print("   - Imagen guardada")
-        print("   - Subida a GitHub")
-        print("   - Alerta enviada a Railway")
-    else:
-        print("\n❌ TEST FALLÓ")
-        print("   Revisa los mensajes de error arriba")
-    
-    print("\n" + "=" * 50)
+
+    frame = np.zeros((400, 600, 3), dtype=np.uint8)
+    cv2.putText(frame, "TEST ALERTA DE AMENAZA", (20, 200),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+
+    enviar_alerta("invasor", 1, frame, es_amenaza=True)
+
