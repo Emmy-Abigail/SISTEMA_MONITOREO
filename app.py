@@ -1,5 +1,7 @@
 import os
 import json
+import subprocess
+import sys
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
@@ -32,6 +34,12 @@ TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")  # ej: whatsapp:+1
 ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
 
 # -----------------------
+# Estado del detector
+# -----------------------
+DETECTOR_RUNNING = False
+DETECTOR_PATH = os.path.join(BASE_DIR, "detector.py")
+
+# -----------------------
 # Funciones auxiliares
 # -----------------------
 def cargar_json(ruta):
@@ -50,7 +58,7 @@ def guardar_json(ruta, data):
     except Exception as e:
         app.logger.error(f"Error guardando JSON {ruta}: {e}")
 
-def enviar_whatsapp(numero_destino, texto):
+def enviar_whatsapp(numero_destino, texto, media_url=None):
     """
     Envía WhatsApp usando Twilio REST API
     """
@@ -59,21 +67,29 @@ def enviar_whatsapp(numero_destino, texto):
         return False
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        message = client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            body=texto,
-            to=numero_destino
-        )
+        msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
+        if media_url:
+            msg_params["media_url"] = [media_url]
+        message = client.messages.create(**msg_params)
         app.logger.info(f"Mensaje Twilio SID: {message.sid} enviado a {numero_destino}")
         return True
     except Exception as e:
         app.logger.error(f"Error enviando WhatsApp: {e}")
         return False
 
+def iniciar_detector():
+    """Lanza detector.py en segundo plano si no está corriendo"""
+    global DETECTOR_RUNNING
+    if not DETECTOR_RUNNING:
+        subprocess.Popen([sys.executable, DETECTOR_PATH])
+        DETECTOR_RUNNING = True
+        app.logger.info("✅ detector.py iniciado en segundo plano")
+    else:
+        app.logger.info("⚠️ detector.py ya está corriendo, no se inicia otra instancia")
+
 # -----------------------
 # Endpoints
 # -----------------------
-
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     from_number = request.values.get("From", "")
@@ -93,7 +109,6 @@ def whatsapp_reply():
         return str(resp)
 
     # Menú principal
-    # Menú
     if incoming_msg in ["menu", "hola", "inicio"]:
         texto = (
             "🟢 *Monitoreo de especies*\n\n"
@@ -105,28 +120,31 @@ def whatsapp_reply():
         )
         msg.body(texto)
         return str(resp)
+
     # Elección de especie
     if incoming_msg in ["1", "tortugas"]:
         estados[from_number] = "tortugas"
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido 🐢 *Tortugas*. El sistema iniciará la detección.")
+        msg.body("Has elegido 🐢 *Tortugas*. El sistema iniciará la detección automáticamente.")
+        iniciar_detector()
         return str(resp)
 
     if incoming_msg in ["2", "gaviotines"]:
         estados[from_number] = "gaviotines"
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido 🐦 *Gaviotines*. El sistema iniciará la detección.")
+        msg.body("Has elegido 🐦 *Gaviotines*. El sistema iniciará la detección automáticamente.")
+        iniciar_detector()
         return str(resp)
     
     if incoming_msg in ["3", "invasores"]:
         estados[from_number] = "invasores"
         guardar_json(ESTADOS_FILE, estados)
-        msg.body("Has elegido ⚠️ *Invasores*. El sistema iniciará la detección de amenazas.")
+        msg.body("Has elegido ⚠️ *Invasores*. El sistema iniciará la detección automáticamente.")
+        iniciar_detector()
         return str(resp)
 
     msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones.")
     return str(resp)
-
 
 
 @app.route("/config", methods=["GET"])
@@ -174,16 +192,7 @@ def recibir_alerta():
     # Enviar mensaje a todos los usuarios
     for numero in usuarios.keys():
         try:
-            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            msg_params = {
-                "from_": TWILIO_WHATSAPP_FROM,
-                "body": texto,
-                "to": numero
-            }
-            if imagen_url:
-                msg_params["media_url"] = [imagen_url]
-            message = client.messages.create(**msg_params)
-            app.logger.info(f"Mensaje enviado a {numero}: {message.sid}")
+            enviar_whatsapp(numero, texto, media_url=imagen_url)
             enviados.append(numero)
         except Exception as e:
             app.logger.error(f"Error enviando a {numero}: {e}")
@@ -197,3 +206,4 @@ def recibir_alerta():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
