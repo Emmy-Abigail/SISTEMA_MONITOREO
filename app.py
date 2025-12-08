@@ -35,6 +35,7 @@ ALERTA_KEY = os.environ.get("ALERTA_KEY")  # secreto para /alerta
 # Variables del detector
 # -----------------------
 DETECTOR_PROCESS = None  # Mantiene el proceso en ejecución
+ULTIMA_ESPECIE = None    # Para saber si cambiar modelo
 
 # -----------------------
 # Funciones auxiliares
@@ -76,26 +77,31 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
         app.logger.error(f"Error enviando WhatsApp: {e}")
         return False
 
-def iniciar_detector():
-    """Inicia detector.py si no está corriendo"""
-    global DETECTOR_PROCESS
+def iniciar_detector(especie):
+    """Inicia detector.py si no está corriendo o si cambió la especie"""
+    global DETECTOR_PROCESS, ULTIMA_ESPECIE
+
     if DETECTOR_PROCESS is None or DETECTOR_PROCESS.poll() is not None:
         DETECTOR_PROCESS = subprocess.Popen(
             ["python3", os.path.join(BASE_DIR, "src", "detector.py")],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            env={**os.environ, "ESPECIE_INICIAL": especie}  # pasar especie inicial
         )
-        app.logger.info("✅ detector.py iniciado")
-    else:
-        app.logger.info("⚠️ detector.py ya está corriendo")
+        ULTIMA_ESPECIE = especie
+        app.logger.info(f"✅ detector.py iniciado con especie: {especie}")
+    elif ULTIMA_ESPECIE != especie:
+        detener_detector()
+        iniciar_detector(especie)
 
 def detener_detector():
     """Detiene el proceso detector.py"""
-    global DETECTOR_PROCESS
+    global DETECTOR_PROCESS, ULTIMA_ESPECIE
     if DETECTOR_PROCESS and DETECTOR_PROCESS.poll() is None:
         DETECTOR_PROCESS.terminate()
         DETECTOR_PROCESS.wait()
         DETECTOR_PROCESS = None
+        ULTIMA_ESPECIE = None
         app.logger.info("🛑 detector.py detenido")
         return True
     return False
@@ -103,7 +109,6 @@ def detener_detector():
 # -----------------------
 # Endpoints
 # -----------------------
-
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     from_number = request.values.get("From", "")
@@ -157,8 +162,8 @@ def whatsapp_reply():
     if especie_elegida:
         estados[from_number] = especie_elegida
         guardar_json(ESTADOS_FILE, estados)
-        msg.body(f"Has elegido *{especie_elegida.capitalize()}*. El sistema iniciará la detección.")
-        iniciar_detector()
+        msg.body(f"Has elegido *{especie_elegida.capitalize()}*. El sistema iniciará la detección automáticamente.")
+        iniciar_detector(especie_elegida)
         return str(resp)
 
     msg.body("No entendí tu mensaje. Escribe *menu* para ver opciones o *stop* para detener el detector.")
@@ -201,7 +206,6 @@ def recibir_alerta():
     enviados = []
     fallos = []
 
-    # Enviar mensaje a todos los usuarios
     for numero in usuarios.keys():
         if enviar_whatsapp(numero, texto, media_url=imagen_url):
             enviados.append(numero)
