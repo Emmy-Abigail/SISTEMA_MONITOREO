@@ -2,10 +2,13 @@ import os
 import time
 import cv2
 import requests
+import numpy as np
 from ultralytics import YOLO
 from utils.influx_logger import InfluxLogger
 from utils.send_alert import enviar_alerta
 from dotenv import load_dotenv
+
+from picamera2 import Picamera2   # ⭐ NUEVO: Picamera2
 
 # -----------------------
 # CONFIGURACIÓN
@@ -22,6 +25,7 @@ if not RAILWAY_URL:
     exit(1)
 
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "clave")
+
 
 # -----------------------
 # Funciones auxiliares
@@ -50,23 +54,29 @@ def cargar_modelo(especie):
         return None
 
 
+# -----------------------
+# Cámara con Picamera2
+# -----------------------
 def iniciar_camara():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("❌ No se pudo iniciar la cámara")
+    try:
+        picam = Picamera2()
+        config = picam.create_video_configuration(main={"size": (640, 480)})
+        picam.configure(config)
+        picam.start()
+        time.sleep(1)  # pequeña espera de estabilización
+        print("📹 Cámara Picamera2 iniciada correctamente")
+        return picam
+    except Exception as e:
+        print(f"❌ Error iniciando Picamera2: {e}")
         return None
-    
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-
-    print("📹 Cámara iniciada correctamente")
-    return cap
 
 
-def liberar_recursos(cap):
-    if cap:
-        cap.release()
+def liberar_recursos(picam):
+    try:
+        if picam:
+            picam.stop()
+    except:
+        pass
     cv2.destroyAllWindows()
 
 
@@ -80,7 +90,7 @@ def main():
 
     ESPECIE_ACTUAL = None
     model = None
-    cap = None
+    picam = None
 
     frame_count = 0
     check_server_every = 30
@@ -89,66 +99,60 @@ def main():
 
     try:
         while True:
-            # ---------------------------------------------------
-            # 1. Consultar servidor periódicamente
-            # ---------------------------------------------------
+            # ---------------------------
+            # 1. Consultar servidor
+            # ---------------------------
             if frame_count % check_server_every == 0:
                 modo = get_mode()
 
                 if modo != ESPECIE_ACTUAL:
                     print(f"🔄 Cambio de modo: {ESPECIE_ACTUAL} → {modo}")
 
-                    # Si el modo es "detenido"
                     if modo is None or modo == "detenido":
-                        liberar_recursos(cap)
-                        cap = None
+                        liberar_recursos(picam)
+                        picam = None
                         model = None
                         ESPECIE_ACTUAL = None
                         print("⏸️ Sistema pausado. Esperando nueva especie...")
                         time.sleep(2)
                         continue
 
-                    # Liberar recursos ANTES de cambiar especie
-                    liberar_recursos(cap)
-                    cap = None
+                    liberar_recursos(picam)
+                    picam = None
 
-                    # Cargar modelo
                     model = cargar_modelo(modo)
                     if model is None:
                         time.sleep(3)
                         continue
 
-                    # Activar cámara
-                    cap = iniciar_camara()
-                    if cap is None:
+                    picam = iniciar_camara()
+                    if picam is None:
                         time.sleep(3)
                         continue
 
                     ESPECIE_ACTUAL = modo
                     print(f"✅ Monitoreando: {ESPECIE_ACTUAL}")
 
-            # ---------------------------------------------------
-            # 2. Si no hay especie activa, esperar
-            # ---------------------------------------------------
             if ESPECIE_ACTUAL is None:
                 time.sleep(1)
                 frame_count = 0
                 continue
 
-            # ---------------------------------------------------
-            # 3. Leer cámara
-            # ---------------------------------------------------
-            ret, frame = cap.read()
-            if not ret:
-                print("⚠️ Error capturando frame")
+            # ---------------------------
+            # 3. Capturar frame (Picamera2)
+            # ---------------------------
+            try:
+                frame = picam.capture_array()
+            except Exception as e:
+                print(f"⚠️ Error capturando frame: {e}")
                 time.sleep(1)
                 continue
 
             frame_count += 1
 
-            # ---------------------------------------------------
+            # ---------------------------
             # 4. Inferencia YOLO
-            # ---------------------------------------------------
+            # ---------------------------
             results = model.predict(
                 source=frame,
                 conf=0.75,
@@ -165,23 +169,21 @@ def main():
             boxes = results[0].boxes
             count = len(boxes)
 
-            # ---------------------------------------------------
-            # 5. Si hay detecciones → enviar alertas
-            # ---------------------------------------------------
+            # ---------------------------
+            # 5. Alertas
+            # ---------------------------
             if count > 0:
                 ahora = time.time()
                 ultimo = ultimo_envio.get(ESPECIE_ACTUAL, 0)
-            
+
                 if ahora - ultimo >= cooldown:
                     print(f"🔔 {count} {ESPECIE_ACTUAL} detectados")
-            
-                    # 🌟 NUEVO: modo invasores → solo enviar "amenaza" sin clasificar
+
                     if ESPECIE_ACTUAL == "invasores":
                         especies_detectadas = {"amenaza": count}
                     else:
                         especies_detectadas = {ESPECIE_ACTUAL: count}
-            
-                    # Enviar alertas
+
                     for especie, cantidad in especies_detectadas.items():
                         enviar_alerta(
                             especie,
@@ -189,21 +191,20 @@ def main():
                             annotated,
                             ESPECIE_ACTUAL == "invasores"
                         )
-            
+
                         influx.log_detection(
                             species=especie,
                             count=cantidad,
                             confidence=0.9,
                             location="raspberry_pi_5"
                         )
-            
+
                     ultimo_envio[ESPECIE_ACTUAL] = ahora
                     print(f"📤 Alertas enviadas. Cooldown: {cooldown}s")
 
-
-            # ---------------------------------------------------
-            # 6. Salir con tecla Q
-            # ---------------------------------------------------
+            # ---------------------------
+            # 6. Salida con Q
+            # ---------------------------
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 print("🛑 Sistema detenido manualmente (q)")
                 break
@@ -215,7 +216,7 @@ def main():
     except Exception as e:
         print(f"❌ Error crítico: {e}")
     finally:
-        liberar_recursos(cap)
+        liberar_recursos(picam)
         influx.close()
         print("✅ Sistema detenido correctamente.")
 
