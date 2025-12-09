@@ -31,7 +31,9 @@ def enviar_alerta(especie, cantidad, frame, es_amenaza=False):
     if not RAILWAY_URL:
         print("❌ Error: RAILWAY_URL no configurada")
         return False
-    
+    # convertir a 3 canales si llega en BGRA 
+    if frame.shape[2] == 4:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)    
     # Guardar imagen
     print(f"📸 Guardando captura...")
     ruta_img = guardar_imagen(frame)
