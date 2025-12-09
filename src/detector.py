@@ -158,7 +158,7 @@ def main():
                         influx.log_detection(
                             species=especie_actual,
                             count=detecciones,
-                            confidence=0.80,  # Si no tienes confianza calculada, puedes poner un valor fijo
+                            confidence=0.75,  # Si no tienes confianza calculada, puedes poner un valor fijo
                             image_path=None
                         )
 

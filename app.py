@@ -138,30 +138,31 @@ def whatsapp_reply():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # --- REGISTRO AUTOMÁTICO (Sin hacer return todavía) ---
-    es_usuario_nuevo = False
-    if from_number not in usuarios:
-        app.logger.info(f"🆕 REGISTRANDO: {from_number}")
-        usuarios[from_number] = {
-            "registrado": True, 
-            "fecha_registro": datetime.now().isoformat()
-        }
-        guardar_json(USUARIOS_FILE, usuarios)
-        es_usuario_nuevo = True
+    # ---- 1. Registrar si no existe ----
+    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
+        if from_number not in usuarios:
+            usuarios[from_number] = {
+                "registrado": True,
+                "fecha_registro": datetime.now().isoformat()
+            }
+            guardar_json(USUARIOS_FILE, usuarios)
 
-    # --- LÓGICA DE COMANDOS ---
-    
-    # 1. Menú Principal (Bienvenida especial para nuevos)
-    if incoming_msg in ["menu", "hola", "inicio", "0", "start", "ayuda", "help"]:
-        if es_usuario_nuevo:
-            msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
-        else:
-            msg.body(generar_menu_principal())
+        msg.body(generar_menu_principal())
+
         return str(resp)
 
-    # 2. Si es nuevo y NO escribió un comando válido, mostrar menú
-    if es_usuario_nuevo:
+    # ---- 2. Registro automático general ----
+
+    if from_number not in usuarios:
+        usuarios[from_number] = {
+            "registrado": True,
+            "fecha_registro": datetime.now().isoformat()
+        }
+
+        guardar_json(USUARIOS_FILE, usuarios)
+
         msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
+
         return str(resp)
 
     # 3. Detener (Opción 4)
