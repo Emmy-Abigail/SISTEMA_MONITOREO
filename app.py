@@ -41,30 +41,31 @@ TIEMPO_INICIO = datetime.now()
 # Funciones de Diseño (UI de Texto)
 # -----------------------
 def generar_menu_principal():
-    """Genera el diseño visual PRO para el menú"""
-    return """*ÑAWI APU* | _Guardián Costero_
-─────────────────────
-👋 *Hola, Ranger.*
-El sistema de visión artificial está listo.
+    """Genera el menú principal profesional para ÑAWI APU"""
+    return """*ÑAWI APU* | _Guardián costero_
+────────────────────────────
+*Bienvenido, Encargado de vigilancia.*
+
+El sistema de visión artificial está activo y listo para operar.
 
 *` [ PANEL DE CONTROL ] `*
 
-1️⃣ *TORTUGAS* 🐢
-   ↳ _Vigilancia de nidos_
+1️⃣ *VIGILANCIA TORTUGAS*
+   ↳ _Monitoreo de nidos y alertas de eclosión_
 
-2️⃣ *GAVIOTINES* 🐦
-   ↳ _Censo de aves_
+2️⃣ *VIGILANCIA GAVIOTINES*
+   ↳ _Monitoreo de nidos y alertas de eclosión_
 
-3️⃣ *AMENAZAS* ⚠️
-   ↳ _Intrusos en zona_
+3️⃣ *AMENAZAS*
+   ↳ _Detección de intrusos o actividad sospechosa_
 
-4️⃣ *DETENER* 🛑
-   ↳ _Modo Standby / Ahorro_
+4️⃣ *DETENER SISTEMA*
+   ↳ _Modo Standby para ahorro de energía_
 
-5️⃣ *DASHBOARD / ESTADO* 📊
-   ↳ _Ver gráficos en vivo_
-─────────────────────
-_Responde con el número de tu opción._"""
+5️⃣ *DASHBOARD / ESTADO*
+   ↳ _Visualización de métricas y gráficos en tiempo real_
+────────────────────────────
+_Responda con el número correspondiente a su opción._"""
 
 def generar_telemetria(modo_actual):
     """Genera el reporte técnico de la opción 5"""
@@ -81,8 +82,8 @@ def generar_telemetria(modo_actual):
 ‣ *Backend:* Railway Cloud
 
 📡 *ENLACE DE DATOS*
-Para ver mapas de calor y reportes detallados:
-👇 *Accede al Centro de Comando:*
+Para ver mapas, gráficas y reportes detallados:
+👇 *Accede a nuestro Dashboard:*
 {DASHBOARD_URL}"""
 
 # -----------------------
