@@ -43,28 +43,28 @@ TIEMPO_INICIO = datetime.now()
 def generar_menu_principal():
     """Genera el menú principal profesional para ÑAWI APU"""
     return """*ÑAWI APU* | _Guardián costero_
-────────────────────────────
+─────────────────────
 *Bienvenido, Encargado de vigilancia.*
 
 El sistema de visión artificial está activo y listo para operar.
 
 *` [ PANEL DE CONTROL ] `*
 
-1️⃣ *VIGILANCIA TORTUGAS*
+1️- *VIGILANCIA TORTUGAS* 🐢
    ↳ _Monitoreo de nidos y alertas de eclosión_
 
-2️⃣ *VIGILANCIA GAVIOTINES*
+2️- *VIGILANCIA GAVIOTINES* 🐦
    ↳ _Monitoreo de nidos y alertas de eclosión_
 
-3️⃣ *AMENAZAS*
+3️- *AMENAZAS* ⚠️
    ↳ _Detección de intrusos o actividad sospechosa_
 
-4️⃣ *DETENER SISTEMA*
+4️- *DETENER SISTEMA* 🛑
    ↳ _Modo Standby para ahorro de energía_
 
-5️⃣ *DASHBOARD / ESTADO*
+5️- *DASHBOARD / ESTADO* 📊
    ↳ _Visualización de métricas y gráficos en tiempo real_
-────────────────────────────
+─────────────────────
 _Responda con el número correspondiente a su opción._"""
 
 def generar_telemetria(modo_actual):
