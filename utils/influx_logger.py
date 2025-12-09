@@ -8,7 +8,7 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # -----------------------
-# Configuración de Rutas (Igual que detector.py)
+# Configuración de Rutas (Para evitar errores de importación)
 # -----------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
@@ -17,62 +17,70 @@ load_dotenv(os.path.join(PROJECT_DIR, ".env"))
 class InfluxLogger:
     def __init__(self):
         """
-        Inicializa el cliente de InfluxDB.
-        No bloquea el programa si falla la conexión inicial.
+        Inicializa el cliente de InfluxDB usando variables de entorno
         """
-        self.url = os.getenv('INFLUXDB_URL')
-        self.token = os.getenv('INFLUXDB_TOKEN')
-        self.org = os.getenv('INFLUXDB_ORG')
-        self.bucket = os.getenv('INFLUXDB_BUCKET')
-        
+        self.config = {
+            'url': os.getenv('INFLUXDB_URL'),
+            'token': os.getenv('INFLUXDB_TOKEN'),
+            'org': os.getenv('INFLUXDB_ORG'),
+            'bucket': os.getenv('INFLUXDB_BUCKET')
+        }
         self.client = None
         self.write_api = None
-        
-        # Intentamos conectar, pero si falla, no detenemos el inicio del robot
-        self._connect(verbose=True)
-
-    def _connect(self, verbose=False):
+        self._connect()
+    
+    def _connect(self):
         """Establece conexión con InfluxDB"""
-        if not self.url:
-            if verbose: print("⚠️ InfluxDB: URL no configurada en .env")
-            return
-
         try:
             self.client = InfluxDBClient(
-                url=self.url,
-                token=self.token,
-                org=self.org,
-                timeout=5000 # 5 segundos timeout
+                url=self.config['url'],
+                token=self.config['token'],
+                org=self.config['org']
             )
             self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
-            if verbose: print(f"✅ InfluxDB Conectado: {self.bucket}")
+            
+            print(f"\n✅ Conectado a InfluxDB: {self.config['url']}")
+            print(f"   Bucket: {self.config['bucket']}")
+            print(f"   Org: {self.config['org']}\n")
+            
         except Exception as e:
-            if verbose: print(f"⚠️ InfluxDB Offline: No se pudo conectar ({e})")
+            print(f"❌ Error conectando a InfluxDB: {e}")
             self.client = None
-
+    
     def log_detection(self, species, count, confidence, location="costa_norte", image_path=None):
         """
-        Registra una detección en la nube.
-        Si falla internet, el programa NO se detiene.
+        Registra una detección en InfluxDB con logs detallados
         """
-        # Reintento de conexión si se había caído
-        if self.client is None:
-            self._connect(verbose=False)
-            if self.client is None:
-                return False # Seguimos sin internet, salimos sin hacer nada
+        if not self.client:
+            print("⚠️ InfluxDB no está conectado. Intentando reconectar...")
+            self._connect()
+            if not self.client:
+                return False
+        
+        # --- Lógica extra para Grafana (Agrupación) ---
+        # Esto ayuda a tu dashboard a separar Fauna de Amenazas
+        tipo_evento = "amenaza" if species in ["invasores", "amenaza_generica"] else "fauna"
 
+        # --- LOGS DE DEBUG (Tu formato favorito) ---
+        print(f"\n=== ☁️ ENVIANDO A INFLUXDB ===")
+        print(f"   Bucket: {self.config['bucket']}")
+        print(f"   Measurement: wildlife_detection")
+        print(f"   Species: '{species}' (Type: {tipo_evento})")
+        print(f"   Count: {count}")
+        print(f"   Conf: {confidence:.2f}")
+        print(f"   Time: {datetime.utcnow()}")
+        print(f"================================\n")
+        
         try:
-            # Definir si es Amenaza o Fauna para facilitar Grafana
-            tipo_evento = "amenaza" if species in ["invasores", "amenaza_generica"] else "fauna"
-
             point = (
                 Point("wildlife_detection")
                 .tag("species", species)
-                .tag("type", tipo_evento) # <--- NUEVO: Para filtrar en dashboard
+                .tag("type", tipo_evento)  # Importante para tus filtros de Grafana
                 .tag("location", location)
                 .tag("device", "raspberry_pi_5")
                 .field("count", int(count))
                 .field("confidence", float(confidence))
+                .field("detected", 1)
                 .time(datetime.utcnow(), WritePrecision.NS)
             )
             
@@ -80,23 +88,20 @@ class InfluxLogger:
                 point.field("image_path", str(image_path))
             
             self.write_api.write(
-                bucket=self.bucket,
-                org=self.org,
+                bucket=self.config['bucket'],
+                org=self.config['org'],
                 record=point
             )
             
-            # Feedback visual sutil
-            # print(f"☁️ Dato subido a InfluxDB") 
+            print(f"✅ Dato registrado correctamente en la nube.")
             return True
             
         except Exception as e:
-            # Si falla la subida (ej: microcorte de internet), no imprimimos error gigante
-            # para no ensuciar la consola del demo.
-            # print(f"⚠️ Fallo subida InfluxDB: {e}")
+            print(f"❌ Error escribiendo a InfluxDB: {e}")
             return False
-
+    
     def close(self):
-        """Cierra la conexión limpiamente"""
+        """Cierra la conexión con InfluxDB"""
         if self.client:
             self.client.close()
-            print("✅ InfluxDB desconectado.")
+            print("🔒 Conexión con InfluxDB cerrada")

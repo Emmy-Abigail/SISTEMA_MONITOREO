@@ -4,7 +4,7 @@ import cv2
 import requests
 import numpy as np
 from ultralytics import YOLO
-from utils.influx_logger import InfluxLogger
+from utils.influx_logger import InfluxLogger 
 from utils.send_alert import enviar_alerta
 from dotenv import load_dotenv
 from picamera2 import Picamera2
@@ -153,6 +153,14 @@ def main():
                             mensaje_prefix=titulo
                         )
                         ultimo_envio[especie_actual] = ahora
+
+                        #registrar en influxdb
+                        influx.log_detection(
+                            species=especie_actual,
+                            count=detecciones,
+                            confidence=0.95,  # Si no tienes confianza calculada, puedes poner un valor fijo
+                            image_path=None
+                        )
 
             # 5. DIBUJAR (Visualización Rápida con OpenCV)
             # En lugar de usar plot() que es lento, dibujamos manualmente los cuadros guardados
