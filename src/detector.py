@@ -25,7 +25,7 @@ ALERTA_KEY = os.environ.get("ALERTA_KEY", "clave")
 SKIP_FRAMES = 4    # Analizar solo 1 de cada 4 frames (Sube esto si sigue lento)
 CONF_THRESHOLD = 0.60
 IMG_SIZE = 640     # Bajar a 320 aumenta mucho la velocidad (vs 640)
-MOSTRAR_EN_PANTALLA = True 
+MOSTRAR_EN_PANTALLA = False
 
 # -----------------------
 # Funciones
