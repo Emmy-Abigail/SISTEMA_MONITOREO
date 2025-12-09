@@ -130,42 +130,54 @@ def whatsapp_reply():
     from_number = request.values.get("From", "").strip()
     incoming_msg = request.values.get("Body", "").strip().lower()
 
+    # 🔍 LOG PARA DEBUG
+    app.logger.info(f"📱 Webhook | De: {from_number} | Msg: '{incoming_msg}'")
+
     usuarios = cargar_json(USUARIOS_FILE)
     estados = cargar_json(ESTADOS_FILE)
     resp = MessagingResponse()
     msg = resp.message()
 
-    # --- REGISTRO DE USUARIO NUEVO ---
+    # --- REGISTRO AUTOMÁTICO (Sin hacer return todavía) ---
+    es_usuario_nuevo = False
     if from_number not in usuarios:
-        usuarios[from_number] = {"registrado": True, "fecha_registro": datetime.now().isoformat()}
+        app.logger.info(f"🆕 REGISTRANDO: {from_number}")
+        usuarios[from_number] = {
+            "registrado": True, 
+            "fecha_registro": datetime.now().isoformat()
+        }
         guardar_json(USUARIOS_FILE, usuarios)
-        # Si es nuevo, forzamos el menú de bienvenida
-        msg.body(generar_menu_principal())
-        return str(resp)
+        es_usuario_nuevo = True
 
     # --- LÓGICA DE COMANDOS ---
     
-    # 1. Menú Principal
-    if incoming_msg in ["menu", "hola", "inicio", "0", "start"]:
-        msg.body(generar_menu_principal())
+    # 1. Menú Principal (Bienvenida especial para nuevos)
+    if incoming_msg in ["menu", "hola", "inicio", "0", "start", "ayuda", "help"]:
+        if es_usuario_nuevo:
+            msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
+        else:
+            msg.body(generar_menu_principal())
         return str(resp)
 
-    # 2. Detener (Opción 4)
+    # 2. Si es nuevo y NO escribió un comando válido, mostrar menú
+    if es_usuario_nuevo:
+        msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
+        return str(resp)
+
+    # 3. Detener (Opción 4)
     if incoming_msg in ["4", "stop", "detener", "apagar"]:
         estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
-        
-        # Respuesta limpia sin repetir menú gigante
         msg.body("🛑 *SISTEMA DETENIDO*\n\nÑawi Apu entra en modo reposo (Standby).\n\n_Escribe *Menu* para reactivar._")
         return str(resp)
 
-    # 3. Estado / Dashboard (Opción 5)
+    # 4. Estado / Dashboard (Opción 5)
     if incoming_msg in ["5", "estado", "status", "dashboard"]:
         estado_user = estados.get(from_number, {}).get("modo", "detenido")
         msg.body(generar_telemetria(estado_user))
         return str(resp)
 
-    # 4. Selección de Modos (1, 2, 3)
+    # 5. Selección de Modos (1, 2, 3)
     especie_map = {
         "1": "tortugas", "tortugas": "tortugas",
         "2": "gaviotines", "gaviotines": "gaviotines",
@@ -181,7 +193,6 @@ def whatsapp_reply():
         emojis = {"tortugas": "🐢", "gaviotines": "🐦", "invasores": "⚠️"}
         emoji = emojis.get(seleccion, "👁️")
 
-        # Respuesta de confirmación profesional
         texto_confirmacion = (
             f"✅ *MODO {seleccion.upper()} ACTIVADO* {emoji}\n\n"
             f"El algoritmo de visión está buscando {seleccion}.\n"
@@ -191,7 +202,7 @@ def whatsapp_reply():
         msg.body(texto_confirmacion)
         return str(resp)
 
-    # 5. Mensaje no entendido
+    # 6. Mensaje no entendido
     msg.body("❌ Comando no reconocido.\n_Escribe *Menu* para ver las opciones._")
     return str(resp)
 
