@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
@@ -14,6 +15,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# NOTA PARA RAILWAY: Los archivos JSON se borran cada vez que redepsliegas.
+# Para producción real, deberías usar una base de datos (Postgres/Redis).
+# Para prototipo, esto funciona bien.
 USUARIOS_FILE = os.path.join(DATA_DIR, "usuarios.json")
 ESTADOS_FILE = os.path.join(DATA_DIR, "estados.json")
 
@@ -28,6 +32,58 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
+DASHBOARD_URL = "https://tu-grafana-o-web.railway.app" # <--- PON TU LINK AQUÍ
+
+# Guardamos el tiempo de inicio para calcular el Uptime
+TIEMPO_INICIO = datetime.now()
+
+# -----------------------
+# Funciones de Diseño (UI de Texto)
+# -----------------------
+def generar_menu_principal():
+    """Genera el diseño visual PRO para el menú"""
+    return """*ÑAWI APU* | _Guardián Costero_
+─────────────────────
+👋 *Hola, Ranger.*
+El sistema de visión artificial está listo.
+
+*` [ PANEL DE CONTROL ] `*
+
+1️⃣ *TORTUGAS* 🐢
+   ↳ _Vigilancia de nidos_
+
+2️⃣ *GAVIOTINES* 🐦
+   ↳ _Censo de aves_
+
+3️⃣ *AMENAZAS* ⚠️
+   ↳ _Intrusos en zona_
+
+4️⃣ *DETENER* 🛑
+   ↳ _Modo Standby / Ahorro_
+
+5️⃣ *DASHBOARD / ESTADO* 📊
+   ↳ _Ver gráficos en vivo_
+─────────────────────
+_Responde con el número de tu opción._"""
+
+def generar_telemetria(modo_actual):
+    """Genera el reporte técnico de la opción 5"""
+    uptime = str(datetime.now() - TIEMPO_INICIO).split('.')[0]
+    
+    estado_icono = "🟢 ONLINE" if modo_actual != "detenido" else "🔴 STANDBY"
+    
+    return f"""📊 *TELEMETRÍA DE ÑAWI APU*
+`Estado: {estado_icono}`
+
+⚙️ *SISTEMA*
+‣ *Modo:* {modo_actual.upper()}
+‣ *Uptime:* {uptime}
+‣ *Backend:* Railway Cloud
+
+📡 *ENLACE DE DATOS*
+Para ver mapas de calor y reportes detallados:
+👇 *Accede al Centro de Comando:*
+{DASHBOARD_URL}"""
 
 # -----------------------
 # Funciones auxiliares
@@ -49,41 +105,21 @@ def guardar_json(ruta, data):
         app.logger.error(f"Error guardando JSON {ruta}: {e}")
 
 def enviar_whatsapp(numero_destino, texto, media_url=None):
-    """Envía WhatsApp usando Twilio REST API"""
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         app.logger.error("❌ Credenciales Twilio no configuradas")
         return False
-    
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        msg_params = {
-            "from_": TWILIO_WHATSAPP_FROM,
-            "body": texto,
-            "to": numero_destino
-        }
+        msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
         if media_url:
             msg_params["media_url"] = [media_url]
         
         message = client.messages.create(**msg_params)
-        app.logger.info(f"✅ Mensaje enviado a {numero_destino} - SID: {message.sid}")
+        app.logger.info(f"✅ Mensaje a {numero_destino} - SID: {message.sid}")
         return True
     except Exception as e:
         app.logger.error(f"❌ Error enviando WhatsApp: {e}")
         return False
-
-def obtener_menu():
-    """Retorna el menú de opciones"""
-    return """🦅 *SISTEMA DE MONITOREO DE VIDA SILVESTRE* 🐢
-
-Selecciona qué deseas monitorear:
-
-1️⃣ Tortugas marinas 🐢
-2️⃣ Gaviotines 🐦
-3️⃣ Amenazas/Invasores ⚠️
-4️⃣ Detener monitoreo 🛑
-5️⃣ Estado actual 📊
-
-Responde con el número de tu opción o escribe *menu* para ver este mensaje nuevamente."""
 
 # -----------------------
 # Webhook de WhatsApp
@@ -95,141 +131,102 @@ def whatsapp_reply():
 
     usuarios = cargar_json(USUARIOS_FILE)
     estados = cargar_json(ESTADOS_FILE)
-
     resp = MessagingResponse()
     msg = resp.message()
 
-    # ---- 1. Comando: menu / hola / ayuda (debe registrar si no existe) ----
-    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
-        if from_number not in usuarios:
-            usuarios[from_number] = {
-                "registrado": True,
-                "fecha_registro": datetime.now().isoformat()
-            }
-            guardar_json(USUARIOS_FILE, usuarios)
-
-        msg.body(obtener_menu())
-        return str(resp)
-
-    # ---- 2. Registro automático general ----
+    # --- REGISTRO DE USUARIO NUEVO ---
     if from_number not in usuarios:
-        usuarios[from_number] = {
-            "registrado": True,
-            "fecha_registro": datetime.now().isoformat()
-        }
+        usuarios[from_number] = {"registrado": True, "fecha_registro": datetime.now().isoformat()}
         guardar_json(USUARIOS_FILE, usuarios)
-
-        msg.body(f"✅ *¡Bienvenido al sistema de monitoreo!*\n\n{obtener_menu()}")
+        # Si es nuevo, forzamos el menú de bienvenida
+        msg.body(generar_menu_principal())
         return str(resp)
 
-    # ---- 3. Comando: detener ----
-    if incoming_msg in ["4", "stop", "detener", "salir"]:
-        estado_actual = estados.get(from_number, {}).get("modo")
+    # --- LÓGICA DE COMANDOS ---
+    
+    # 1. Menú Principal
+    if incoming_msg in ["menu", "hola", "inicio", "0", "start"]:
+        msg.body(generar_menu_principal())
+        return str(resp)
+
+    # 2. Detener (Opción 4)
+    if incoming_msg in ["4", "stop", "detener", "apagar"]:
+        estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now().isoformat()}
+        guardar_json(ESTADOS_FILE, estados)
         
-        if estado_actual and estado_actual != "detenido":
-            estados[from_number] = {
-                "modo": "detenido",
-                "fecha_cambio": datetime.now().isoformat()
-            }
-            guardar_json(ESTADOS_FILE, estados)
-            msg.body(f"🛑 *Monitoreo de {estado_actual} detenido correctamente.*\n\n{obtener_menu()}")
-        else:
-            msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
+        # Respuesta limpia sin repetir menú gigante
+        msg.body("🛑 *SISTEMA DETENIDO*\n\nÑawi Apu entra en modo reposo (Standby).\n\n_Escribe *Menu* para reactivar._")
         return str(resp)
 
-    # ---- 4. Comando: estado ----
-    if incoming_msg in ["5", "estado"]:
-        estado = estados.get(from_number, {})
-        modo_actual = estado.get("modo", "ninguno")
-        
-        if modo_actual and modo_actual != "detenido":
-            fecha = estado.get("fecha_cambio", "desconocida")
-            msg.body(f"📊 *Estado actual*\n\n"
-                     f"Monitoreando: *{modo_actual.upper()}*\n"
-                     f"Desde: {fecha}\n\n"
-                     f"Envía *4* para detener.")
-        else:
-            msg.body(f"No hay monitoreo activo.\n\n{obtener_menu()}")
+    # 3. Estado / Dashboard (Opción 5)
+    if incoming_msg in ["5", "estado", "status", "dashboard"]:
+        estado_user = estados.get(from_number, {}).get("modo", "detenido")
+        msg.body(generar_telemetria(estado_user))
         return str(resp)
 
-    # ---- 5. Mapeo de opciones ----
+    # 4. Selección de Modos (1, 2, 3)
     especie_map = {
-        "1": "tortugas",
-        "tortugas": "tortugas",
-        "tortuga": "tortugas",
-        "2": "gaviotines",
-        "gaviotines": "gaviotines",
-        "gaviotin": "gaviotines",
-        "3": "invasores",
-        "invasores": "invasores",
-        "amenazas": "invasores",
-        "amenaza": "invasores"
+        "1": "tortugas", "tortugas": "tortugas",
+        "2": "gaviotines", "gaviotines": "gaviotines",
+        "3": "invasores", "amenazas": "invasores"
     }
+    
+    seleccion = especie_map.get(incoming_msg)
 
-    especie_elegida = especie_map.get(incoming_msg)
-
-    if especie_elegida:
-        estados[from_number] = {
-            "modo": especie_elegida,
-            "fecha_cambio": datetime.now().isoformat()
-        }
+    if seleccion:
+        estados[from_number] = {"modo": seleccion, "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
 
-        emojis = {
-            "tortugas": "🐢",
-            "gaviotines": "🐦",
-            "invasores": "⚠️"
-        }
-        emoji = emojis.get(especie_elegida, "📊")
+        emojis = {"tortugas": "🐢", "gaviotines": "🐦", "invasores": "⚠️"}
+        emoji = emojis.get(seleccion, "👁️")
 
-        msg.body(f"{emoji} *Monitoreo de {especie_elegida.upper()} iniciado*\n\n"
-                 f"Recibirás alertas automáticas cuando se detecten {especie_elegida}.\n\n"
-                 f"Envía *4* o *detener* para parar el monitoreo.")
+        # Respuesta de confirmación profesional
+        texto_confirmacion = (
+            f"✅ *MODO {seleccion.upper()} ACTIVADO* {emoji}\n\n"
+            f"El algoritmo de visión está buscando {seleccion}.\n"
+            "Te notificaré inmediatamente si detecto algo.\n\n"
+            "_Escribe *4* para Pausar o *Menu* para opciones._"
+        )
+        msg.body(texto_confirmacion)
         return str(resp)
 
-    # ---- 6. Mensaje no reconocido ----
-    msg.body(f"❌ No entendí tu mensaje.\n\n{obtener_menu()}")
+    # 5. Mensaje no entendido
+    msg.body("❌ Comando no reconocido.\n_Escribe *Menu* para ver las opciones._")
     return str(resp)
 
 # -----------------------
-# Endpoint de configuración
+# Endpoint Config (Para Raspberry Pi)
 # -----------------------
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
-    """
-    La Raspberry Pi consulta este endpoint para saber qué especie monitorear.
-    Retorna la última especie elegida por cualquier usuario activo.
-    """
+    """La Raspberry consulta esto para saber si prender la cámara o dormir"""
     estados = cargar_json(ESTADOS_FILE)
     
-    # Filtrar solo estados activos (no detenidos)
-    activos = {k: v for k, v in estados.items() 
-               if v.get("modo") != "detenido"}
+    # Buscamos si ALGUIEN tiene el sistema activo. 
+    # (Asumiendo que es 1 robot para todos. Si hay conflicto, gana el último cambio)
+    activos = {k: v for k, v in estados.items() if v.get("modo") != "detenido"}
     
     if activos:
-        # Obtener el último estado activo
-        ultimo_usuario = max(activos.items(), 
-                           key=lambda x: x[1].get("fecha_cambio", ""))
-        modo = ultimo_usuario[1].get("modo", "detenido")
+        # Obtenemos el modo del usuario que lo cambió más recientemente
+        ultimo = max(activos.items(), key=lambda x: x[1].get("fecha_cambio", ""))
+        modo = ultimo[1].get("modo")
     else:
-        modo = "detenido"
+        modo = "detenido" # Si todos están en stop o no hay nadie
     
-    app.logger.info(f"📡 Config solicitada. Modo actual: {modo}")
+    # Log para debug en Railway
+    app.logger.info(f"📡 Robot consulta config -> Modo: {modo}")
     return jsonify({"mode": modo})
 
 # -----------------------
-# Endpoint de alerta
+# Endpoint Alerta (Recibe de Raspberry)
 # -----------------------
 @app.route("/alerta", methods=["POST"])
 def recibir_alerta():
-    """
-    Endpoint usado por detector.py (Raspberry Pi) para notificar detecciones.
-    Envía WhatsApp a todos los usuarios registrados.
-    """
-    # Verificar clave de seguridad
-    header_key = request.headers.get("X-ALERTA-KEY", "")
-    if header_key != ALERTA_KEY:
-        app.logger.warning("⚠️ Intento de acceso a /alerta con llave inválida")
+    # ... (Mantén tu lógica actual de alerta, está perfecta) ...
+    # Solo asegúrate de usar 'generar_telemetria' o textos bonitos si modificas algo aquí.
+    
+    # Verificación de seguridad
+    if request.headers.get("X-ALERTA-KEY") != ALERTA_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
@@ -237,80 +234,32 @@ def recibir_alerta():
         especie = data.get("especie", "desconocida")
         cantidad = data.get("cantidad", 1)
         imagen_url = data.get("imagen")
-        tipo = data.get("tipo", "deteccion")
-        mensaje_prefix = data.get("mensaje_prefix", "🔔 Detección")
-    except Exception as e:
-        app.logger.error(f"❌ Error parsing JSON en /alerta: {e}")
+        mensaje_prefix = data.get("mensaje_prefix", "🔔 *DETECCIÓN CONFIRMADA*")
+    except:
         return jsonify({"error": "bad request"}), 400
 
-    # Cargar usuarios registrados
     usuarios = cargar_json(USUARIOS_FILE)
-    if not usuarios:
-        app.logger.info("⚠️ No hay usuarios registrados.")
-        return jsonify({"status": "no_users"}), 200
+    texto = (
+        f"{mensaje_prefix}\n"
+        "─────────────────────\n"
+        f"📍 *Especie:* {especie.upper()}\n"
+        f"🔢 *Cantidad:* {cantidad}\n"
+        f"🕐 *Hora:* {datetime.now().strftime('%H:%M:%S')}\n"
+        "─────────────────────"
+    )
+    if imagen_url: texto += "\n📸 _Evidencia adjunta:_"
 
-    # Construir mensaje
-    fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    texto = f"{mensaje_prefix}\n\n"
-    texto += f"📍 Especie: *{especie.upper()}*\n"
-    texto += f"🔢 Cantidad: *{cantidad}*\n"
-    texto += f"🕐 Fecha: {fecha_hora}\n"
-    
-    if imagen_url:
-        texto += "\n📸 Imagen adjunta a continuación."
-
-    # Enviar a todos los usuarios
-    enviados = []
-    fallos = []
-
+    enviados = 0
     for numero in usuarios.keys():
         if enviar_whatsapp(numero, texto, media_url=imagen_url):
-            enviados.append(numero)
-        else:
-            fallos.append(numero)
+            enviados += 1
 
-    app.logger.info(f"✅ Alertas enviadas: {len(enviados)} exitosas, {len(fallos)} fallidas")
-    
-    return jsonify({
-        "status": "ok",
-        "enviados": len(enviados),
-        "fallos": len(fallos)
-    }), 200
-
-# -----------------------
-# Endpoint de salud
-# -----------------------
-@app.route("/health", methods=["GET"])
-def health():
-    """Health check para Railway"""
-    estados = cargar_json(ESTADOS_FILE)
-    usuarios = cargar_json(USUARIOS_FILE)
-    
-    activos = sum(1 for v in estados.values() 
-                  if v.get("modo") != "detenido")
-    
-    return jsonify({
-        "status": "ok",
-        "usuarios_registrados": len(usuarios),
-        "monitoreos_activos": activos,
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route("/", methods=["GET"])
-def index():
-    """Página de inicio"""
-    return """
-    <h1>🦅 Sistema de Monitoreo de Vida Silvestre 🐢</h1>
-    <p>Sistema activo y funcionando correctamente.</p>
-    <ul>
-        <li><a href="/health">Ver estado del sistema</a></li>
-    </ul>
-    """
+    return jsonify({"status": "ok", "enviados": enviados}), 200
 
 # -----------------------
 # Ejecución
 # -----------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
 

@@ -276,33 +276,3 @@ def test_subida():
     except Exception as e:
         print(f"❌ Error en test de subida: {e}")
         return False
-
-
-# ============================================
-# TEST COMPLETO - Ejecutar con: python utils/github_upload.py
-# ============================================
-if __name__ == "__main__":
-    print("\n" + "=" * 50)
-    print("🧪 TEST COMPLETO DE GITHUB_UPLOAD.PY")
-    print("=" * 50)
-    
-    # Test 1: Verificar configuración
-    if not verificar_configuracion():
-        print("\n❌ Configuración incompleta. Configura tu .env primero.")
-        exit(1)
-    
-    # Test 2: Probar conexión
-    if not test_conexion():
-        print("\n❌ No se pudo conectar a GitHub.")
-        exit(1)
-    
-    # Test 3: Probar subida
-    if not test_subida():
-        print("\n❌ La subida de prueba falló.")
-        exit(1)
-    
-    print("\n" + "=" * 50)
-    print("✅ ¡TODOS LOS TESTS PASARON!")
-    print("=" * 50)
-    print("\n💡 Tu configuración está lista para usar.")
-    print("   Ahora puedes ejecutar detector.py")
