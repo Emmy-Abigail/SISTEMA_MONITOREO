@@ -167,13 +167,16 @@ class AgentSync:
                     alert["imagen"] = (
                         f"{self.url}/api/detecciones/{event['evento_id']}/imagen"
                     )
+                # El servidor espera la verificación de Gemini (~3 s, hasta 20 s) antes de avisar.
                 response = self.outgoing.post(
-                    f"{self.url}/alerta", json=alert, timeout=12
+                    f"{self.url}/alerta", json=alert, timeout=45
                 )
                 response.raise_for_status()
                 result = response.json()
                 sent = result.get("enviados", 0)
                 rejected = result.get("rechazados", 0)
+                if result.get("status") == "filtrado_ia":
+                    print(f"Gemini descartó la detección (sin alerta): {result.get('motivo')}", flush=True)
                 message = f"Solicitud WhatsApp procesada: {len(sent) if isinstance(sent,list) else sent} envíos aceptados"
                 if rejected:
                     message += f", {rejected} rechazados por Twilio (revisa los registros del servidor)"

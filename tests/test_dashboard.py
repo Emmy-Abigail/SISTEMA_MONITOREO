@@ -9,12 +9,16 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 class DashboardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Las pruebas nunca llaman a Gemini de verdad (el monitor carga .env al importarse;
+        # una variable vacía impide que lo sobrescriba).
+        cls.previous_gemini = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = ""
         cls.directory = tempfile.TemporaryDirectory()
         cls.previous_directory = os.environ.get("MONITOREO_DATA_DIR")
         os.environ["MONITOREO_DATA_DIR"] = cls.directory.name
@@ -33,6 +37,10 @@ class DashboardTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if cls.previous_gemini is None:
+            os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            os.environ["GEMINI_API_KEY"] = cls.previous_gemini
         cls.directory.cleanup()
         if cls.previous_directory is None:
             os.environ.pop("MONITOREO_DATA_DIR", None)
@@ -193,7 +201,7 @@ class DashboardTests(unittest.TestCase):
             self.client.post("/whatsapp", data={"Body": "menu", "From": sender})
         self.client.post("/whatsapp", data={"Body": "1", "From": first})
         self.client.post("/whatsapp", data={"Body": "2", "From": second})
-        self.client.post("/whatsapp", data={"Body": "4", "From": second})
+        self.client.post("/whatsapp", data={"Body": "3", "From": second})
         self.assertEqual(self.client.get("/config").json["mode"], "detenido")
 
     def test_first_numeric_message_activates_camera_mode(self):
@@ -203,7 +211,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get("/config").json["mode"], "tortugas")
         self.client.post(
-            "/whatsapp", data={"Body": "4", "From": "whatsapp:+51000000003"}
+            "/whatsapp", data={"Body": "3", "From": "whatsapp:+51000000003"}
         )
         self.assertEqual(self.client.get("/config").json["mode"], "detenido")
 
@@ -284,7 +292,12 @@ class DashboardTests(unittest.TestCase):
             "/api/exportar?especie=invasores", headers=self.headers
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Intrusión de perro", response.data.decode("utf-8-sig"))
+        report = response.data.decode("utf-8-sig")
+        self.assertIn("Intrusión de perro", report)
+        self.assertTrue(report.startswith("Fecha (Perú),Hora (Perú),Detección"))
+        self.assertIn("Amenaza", report)
+        self.assertNotIn("invasores", report)
+        self.assertIn("nawi-apu-reporte_", response.headers["Content-Disposition"])
         self.assertEqual(
             self.client.get("/api/detecciones?orden=fecha%3BDROP%20TABLE").status_code,
             400,
@@ -433,7 +446,7 @@ class DashboardTests(unittest.TestCase):
             elif snapshots == 2:
                 agent.flush_one()
                 self.client.post(
-                    "/whatsapp", data={"Body": "4", "From": "whatsapp:+51000000009"}
+                    "/whatsapp", data={"Body": "3", "From": "whatsapp:+51000000009"}
                 )
                 agent.poll()
             else:
@@ -451,6 +464,7 @@ class DashboardTests(unittest.TestCase):
             interval=20,
             name="PC prueba",
             no_window=True,
+            amenazas_cada=0,
         )
         try:
             with patch.object(monitor_pc, "YOLO", return_value=model), patch.object(
@@ -507,6 +521,47 @@ class DashboardTests(unittest.TestCase):
         for agent in (first, second):
             agent.session.close()
             agent.outgoing.close()
+
+    def test_threats_are_watched_while_monitoring_turtles(self):
+        import numpy as np
+        from src import monitor_pc
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        capture = MagicMock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (True, frame)
+
+        def fake_result(names, labels):
+            boxes = MagicMock()
+            boxes.__len__.return_value = len(labels)
+            boxes.conf.max.return_value = 0.9
+            boxes.cls.tolist.return_value = labels
+            return SimpleNamespace(boxes=boxes, names=names, plot=lambda img=None: frame)
+
+        for species, label in (("tortugas", "tortuga"), ("gaviotines", "gaviotin")):
+            with self.subTest(species=species):
+                species_model = MagicMock()
+                species_model.predict.return_value = [fake_result({0: label}, [0])]
+                threat_model = MagicMock()
+                threat_model.predict.return_value = [fake_result({0: "persona"}, [0])]
+                events = []
+                sync = SimpleNamespace(
+                    snapshot=lambda species=species: {"mode": species, "ubicacion": None},
+                    set_status=lambda status: None,
+                    enqueue=events.append,
+                )
+                args = SimpleNamespace(duration=0.3, camera=0, conf=0.6, imgsz=416, interval=20,
+                                       name="PC", no_window=True, amenazas_cada=1)
+                loader = lambda name, m=species_model, t=threat_model: t if name == "invasores" else m
+                with patch.object(monitor_pc, "cargar_modelo", side_effect=loader), patch.object(
+                    monitor_pc.cv2, "VideoCapture", return_value=capture
+                ), patch.object(monitor_pc.cv2, "destroyAllWindows"):
+                    monitor_pc.run_monitor(args, sync)
+                kinds = sorted(event["especie"] for event in events)
+                self.assertEqual(kinds, sorted(["invasores", species]))
+                threat = next(event for event in events if event["especie"] == "invasores")
+                self.assertEqual(threat["tipo_evento"], "Intrusión: persona")
+                self.assertEqual(threat["severidad"], "alta")
 
     # ---- Correcciones de arquitectura ----
 
@@ -642,9 +697,9 @@ class DashboardTests(unittest.TestCase):
         authorized = {"whatsapp:+51000000004"}
         with patch.object(self.module, "WHATSAPP_AUTORIZADOS", authorized):
             response = self.client.post(
-                "/whatsapp", data={"Body": "4", "From": "whatsapp:+51999999999"}
+                "/whatsapp", data={"Body": "3", "From": "whatsapp:+51999999999"}
             )
-            self.assertIn("no está autorizado", response.get_data(as_text=True))
+            self.assertIn("no está registrado en *ÑAWI APU*", response.get_data(as_text=True))
             self.client.post("/whatsapp", data={"Body": "menu", "From": "whatsapp:+51000000004"})
             users = json.loads(Path(self.module.USUARIOS_FILE).read_text())
             self.assertEqual(list(users), ["whatsapp:+51000000004"])
@@ -658,6 +713,252 @@ class DashboardTests(unittest.TestCase):
             sender.assert_called_once()
             self.assertEqual(sender.call_args[0][0], "whatsapp:+51000000004")
         self.assertEqual(self.module.normalizar_numero("+51 900 000 000"), "whatsapp:+51900000000")
+
+    def test_false_positives_do_not_count_and_review_groups(self):
+        for index, (species, count) in enumerate(
+            [("tortugas", 2), ("tortugas", 3), ("gaviotines", 4)]
+        ):
+            self.client.post(
+                "/api/detecciones",
+                json={"evento_id": f"rev-{index}", "especie": species, "cantidad": count},
+                headers=self.headers,
+            )
+        summary = self.client.get("/api/resumen").json
+        self.assertEqual(summary["pendientes"], 3)
+        self.assertEqual(summary["kpis"]["tortugas"]["valor"], 5)
+        # El guardián marca una tortuga como falso positivo y confirma otra.
+        self.client.patch("/api/detecciones/rev-1", json={"estado": "descartado"}, headers=self.headers)
+        self.client.patch("/api/detecciones/rev-0", json={"estado": "confirmado"}, headers=self.headers)
+        summary = self.client.get("/api/resumen").json
+        self.assertEqual(summary["kpis"]["tortugas"]["valor"], 2)
+        self.assertEqual(summary["kpis"]["total"]["valor"], 2)
+        self.assertEqual(summary["pendientes"], 1)
+        self.assertNotIn("rev-1", [p["id"] for p in summary["puntos"]])
+        listing = lambda state: self.client.get(f"/api/detecciones?estado={state}").json["total"]
+        self.assertEqual(listing("todos"), 2)
+        self.assertEqual(listing("pendiente"), 1)
+        self.assertEqual(listing("validado"), 1)
+        self.assertEqual(listing("descartado"), 1)
+        self.assertEqual(self.client.get("/api/detecciones?estado=otro").status_code, 400)
+
+    def test_reply_no_marks_last_alert_as_false_positive(self):
+        number = "whatsapp:+51000000007"
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({number: {}}))
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok"):
+            for event_id in ("vieja", "ultima"):
+                self.client.post(
+                    "/alerta",
+                    json={"evento_id": event_id, "especie": "tortugas", "cantidad": 1, "fecha": now},
+                    headers=self.headers,
+                )
+        reply = self.client.post("/whatsapp", data={"Body": "No", "From": number})
+        self.assertIn("Falsa alarma registrada", reply.get_data(as_text=True))
+        detail = lambda event_id: self.client.get(f"/api/detecciones/{event_id}").json["estado"]
+        self.assertEqual(detail("ultima"), "descartado")
+        self.assertEqual(detail("vieja"), "nuevo")
+        self.assertEqual(
+            self.client.get("/api/detecciones/ultima").json["descartado_por"], "guardian"
+        )
+        # Otro número sin alertas recientes no descarta nada.
+        other = self.client.post("/whatsapp", data={"Body": "no", "From": "whatsapp:+51000000008"})
+        self.assertIn("No se encontró", other.get_data(as_text=True))
+
+    def test_reply_no_quoting_an_alert_discards_that_one(self):
+        number = "whatsapp:+51000000014"
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({number: {}}))
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        sent = []
+
+        def fake_twilio(**params):
+            sent.append(params)
+            return SimpleNamespace(sid=f"SM{len(sent)}")
+
+        with patch.multiple(self.module, TWILIO_ACCOUNT_SID="AC1", TWILIO_AUTH_TOKEN="t",
+                            TWILIO_WHATSAPP_FROM="whatsapp:+1"), patch.object(self.module, "Client") as client:
+            client.return_value.messages.create.side_effect = fake_twilio
+            for event_id, species in (("nido-tortuga", "tortugas"), ("intruso-real", "invasores")):
+                self.client.post("/alerta", json={"evento_id": event_id, "especie": species,
+                                                  "cantidad": 1, "fecha": now}, headers=self.headers)
+        self.assertIn("responda «NO» a este mensaje", sent[0]["body"])
+        # El guardián fue al nido y cita la PRIMERA alerta (la de la tortuga), no la última.
+        reply = self.client.post("/whatsapp", data={"Body": "NO", "From": number,
+                                                    "OriginalRepliedMessageSid": "SM1"})
+        self.assertIn("tortuga marina", reply.get_data(as_text=True))
+        state = lambda event_id: self.client.get(f"/api/detecciones/{event_id}").json["estado"]
+        self.assertEqual(state("nido-tortuga"), "descartado")
+        self.assertEqual(state("intruso-real"), "nuevo")
+
+    def _two_alerts(self, number):
+        """Tortuga (más reciente) e intruso (antes), ambos enviados a `number`."""
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({number: {}}))
+        now = datetime.now(timezone.utc)
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok"):
+            for event_id, species, minutes in (("libre-intruso", "invasores", 5), ("libre-tortuga", "tortugas", 1)):
+                self.client.post("/alerta", headers=self.headers, json={
+                    "evento_id": event_id, "especie": species, "cantidad": 1,
+                    "tipo_evento": "Intrusión: persona" if species == "invasores" else None,
+                    "fecha": (now - timedelta(minutes=minutes)).isoformat(timespec="seconds")})
+        return now
+
+    def test_free_text_reply_targets_the_mentioned_species(self):
+        number = "whatsapp:+51000000015"
+        self._two_alerts(number)
+        state = lambda event_id: self.client.get(f"/api/detecciones/{event_id}").json["estado"]
+        # Aunque la última alerta fue la tortuga, el guardián habla del intruso.
+        reply = self.client.post("/whatsapp", data={"Body": "No había ningún intruso", "From": number})
+        self.assertIn("(persona)", reply.get_data(as_text=True))
+        self.assertEqual(state("libre-intruso"), "descartado")
+        self.assertEqual(state("libre-tortuga"), "nuevo")
+        # Si el bot entendió mal, se puede deshacer.
+        reply = self.client.post("/whatsapp", data={"Body": "Deshacer", "From": number})
+        self.assertIn("vuelve a contar", reply.get_data(as_text=True))
+        self.assertEqual(state("libre-intruso"), "nuevo")
+        reply = self.client.post("/whatsapp", data={"Body": "la tortuga era una roca", "From": number})
+        self.assertEqual(state("libre-tortuga"), "descartado")
+        # Pide una especie de la que no hubo alerta.
+        reply = self.client.post("/whatsapp", data={"Body": "no había gaviotines", "From": number})
+        self.assertIn("No se encontró una alerta de gaviotines", reply.get_data(as_text=True))
+
+    def test_free_text_reply_with_time_and_gemini_fallback(self):
+        from utils import gemini
+
+        number = "whatsapp:+51000000016"
+        now = self._two_alerts(number)
+        state = lambda event_id: self.client.get(f"/api/detecciones/{event_id}").json["estado"]
+        hour = (now - timedelta(minutes=5)).astimezone(self.module.HORA_PERU).strftime("%H:%M")
+        self.client.post("/whatsapp", data={"Body": f"la de las {hour} no era nada", "From": number})
+        self.assertEqual(state("libre-intruso"), "descartado")
+        # Frase sin palabras clave: la interpreta Gemini.
+        with patch.object(gemini, "interpretar_respuesta",
+                          return_value={"descarta": True, "especie": "tortugas", "hora": None}) as ia:
+            self.client.post("/whatsapp", data={"Body": "Solo encontré una piedra grande", "From": number})
+        ia.assert_called_once()
+        self.assertEqual(state("libre-tortuga"), "descartado")
+
+    def test_bot_understands_accents_and_reports_real_camera_status(self):
+        number = "whatsapp:+51000000020"
+        reply = lambda body: self.client.post("/whatsapp", data={"Body": body, "From": number}).get_data(as_text=True)
+        first = reply("Menú")
+        self.assertIn("Le damos la bienvenida", first)  # solo en el primer contacto
+        self.assertIn("1️⃣ *Vigilancia de tortugas*", first)
+        self.assertNotIn("bienvenida", reply("MENU"))
+        # Sin cámara conectada: lo dice al activar y en el estado.
+        activated = reply("1")
+        self.assertIn("*VIGILANCIA ACTIVADA* 🐢", activated)
+        self.assertIn("Cámara sin conexión", activated)
+        self.assertNotIn("foto", activated)  # no repite lo obvio
+        self.assertIn("ya está activa", reply("tortugas"))
+        self.client.post("/api/detecciones", headers=self.headers,
+                         json={"evento_id": "hoy-1", "especie": "tortugas", "cantidad": 3})
+        status = reply("Estado")
+        self.assertIn("*Cámara:* 🔴 Sin conexión", status)
+        self.assertIn("*Hoy:* 3 tortugas", status)
+        self.assertIn("*Dashboard:*", status)
+        self.assertNotIn("Uptime", status)
+        # Con la cámara enviando latidos aparece como vigilando.
+        self.client.post("/api/dispositivo", headers=self.headers,
+                         json={"dispositivo": "Laptop", "estado": "monitoreando"})
+        self.assertIn("🟢 Vigilando tortugas + intrusos", reply("4"))
+        # "stop" ya no pausa (en WhatsApp/Twilio da de baja al número).
+        self.assertIn("Opción no reconocida", reply("stop"))
+        self.assertEqual(self.client.get("/config").json["mode"], "tortugas")
+        self.assertIn("VIGILANCIA EN PAUSA", reply("Pausar"))
+        self.assertEqual(self.client.get("/config").json["mode"], "detenido")
+        self.assertIn("deshacer", reply("ayuda"))
+        # "Solo intrusos" ya no es una opción: los intrusos se vigilan con 1 y 2.
+        self.assertIn("Opción no reconocida", reply("intrusos"))
+
+    def test_alerts_use_whatsapp_template_when_configured(self):
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000021": {}}))
+        sent = []
+        with patch.object(self.module, "TWILIO_PLANTILLA_ALERTA", "HX123"), patch.object(
+            self.module, "enviar_whatsapp", side_effect=lambda *a, **k: sent.append(k) or "ok"
+        ):
+            self.client.post("/alerta", headers=self.headers, json={
+                "evento_id": "plantilla-1", "especie": "tortugas", "cantidad": 2,
+                "fecha": "2026-11-14T06:54:00+00:00"})
+        template = sent[0]["plantilla"]
+        self.assertEqual(template["sid"], "HX123")
+        self.assertEqual(template["variables"]["1"], "🐢 TORTUGA MARINA DETECTADA")
+        self.assertEqual(template["variables"]["2"], "2 individuos · 14/11 01:54")
+        self.assertEqual(template["variables"]["4"], "plantilla-1")
+        self.assertTrue(all("\n" not in value for value in template["variables"].values()))
+
+    def test_alert_links_to_the_event(self):
+        text = self.module.generar_alerta(
+            {"evento_id": "abc 1", "especie": "tortugas", "cantidad": 1,
+             "fecha": "2026-11-14T06:54:00+00:00"}
+        )
+        self.assertIn("‣ *Hora:* 01:54", text)  # hora de Perú (el servidor está en UTC)
+        self.assertIn("responda «NO» a este mensaje", text)
+        self.assertNotIn("http", text)  # el dashboard solo se ofrece en la opción 5
+
+    def _detection_with_photo(self, event_id, species="tortugas"):
+        jpeg = base64.b64encode(b"\xff\xd8\xff" + b"0" * 64 + b"\xff\xd9").decode()
+        return self.client.post(
+            "/api/detecciones",
+            json={"evento_id": event_id, "especie": species, "cantidad": 1, "captura": jpeg},
+            headers=self.headers,
+        )
+
+    def test_gemini_filters_false_alarm_before_whatsapp(self):
+        from utils import gemini
+
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000011": {}}))
+        verdict = {"presente": False, "cantidad": 0, "descripcion": "No hay tortugas, solo arena."}
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "x"}), patch.object(
+            gemini, "analizar", return_value=verdict
+        ) as gemini_call, patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            self._detection_with_photo("ia-falsa")
+            response = self.client.post(
+                "/alerta", json={"evento_id": "ia-falsa", "especie": "tortugas", "cantidad": 1},
+                headers=self.headers,
+            )
+        self.assertEqual(response.json["status"], "filtrado_ia")
+        sender.assert_not_called()
+        self.assertEqual(gemini_call.call_count, 1)  # una sola verificación por detección
+        event = self.client.get("/api/detecciones/ia-falsa").json
+        self.assertEqual((event["estado"], event["ia_resultado"]), ("descartado", "no_coincide"))
+        self.assertEqual(self.client.get("/api/resumen").json["kpis"]["tortugas"]["valor"], 0)
+
+    def test_gemini_confirms_and_corrects_threat_class(self):
+        from utils import gemini
+
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000012": {}}))
+        verdict = {"presente": True, "cantidad": 1, "clase": "persona",
+                   "descripcion": "Una persona camina junto a la zona de nidos."}
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "x"}), patch.object(
+            gemini, "analizar", return_value=verdict
+        ), patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            self._detection_with_photo("ia-amenaza", "invasores")
+            self.client.post(
+                "/alerta",
+                json={"evento_id": "ia-amenaza", "especie": "invasores", "cantidad": 1,
+                      "tipo_evento": "Intrusión: perro"},
+                headers=self.headers,
+            )
+        text = sender.call_args[0][1]
+        self.assertIn("_Una persona camina junto a la zona de nidos._", text)
+        self.assertNotIn("Gemini", text)
+        self.assertIn("Detectado:* persona", text)
+        event = self.client.get("/api/detecciones/ia-amenaza").json
+        self.assertEqual(event["tipo_evento"], "Intrusión: persona")
+
+    def test_alert_still_sent_when_gemini_unavailable(self):
+        from utils import gemini
+
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000013": {}}))
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "x"}), patch.object(
+            gemini, "analizar", return_value=None
+        ), patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            self._detection_with_photo("ia-caida")
+            self.client.post(
+                "/alerta", json={"evento_id": "ia-caida", "especie": "tortugas", "cantidad": 1},
+                headers=self.headers,
+            )
+        sender.assert_called_once()
+        self.assertEqual(self.client.get("/api/detecciones/ia-caida").json["ia_resultado"], "error")
 
     def test_exact_coordinates_require_key(self):
         nest = {"nombre": "Nido 1", "latitud": -12.163456, "longitud": -77.031234, "tipo": "nido"}

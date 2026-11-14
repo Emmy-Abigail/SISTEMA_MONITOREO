@@ -23,6 +23,40 @@ load_dotenv(PROJECT_DIR / ".env")
 
 from ultralytics import YOLO
 from utils.agent_sync import AgentSync
+from src.hud import Hud
+
+
+# Modelo por modo. Amenazas usa el YOLO oficial preentrenado con COCO (+100 000
+# imágenes): el modelo propio invasores.pt confundía casi todo con "perro".
+# Solo se buscan las clases que son amenaza en una playa, con nombres en español
+# (sin tildes: las etiquetas se dibujan con una fuente básica de OpenCV).
+MODELOS = {
+    "tortugas": {"archivo": "tortugas.pt"},
+    "gaviotines": {"archivo": "gaviotines.pt"},
+    "invasores": {
+        "archivo": "amenazas_coco.pt",
+        "clases": {
+            0: "persona",
+            1: "bicicleta",
+            2: "auto",
+            3: "moto",
+            5: "bus",
+            7: "camion",
+            8: "bote",
+            16: "perro",
+        },
+    },
+}
+
+
+def cargar_modelo(mode):
+    config = MODELOS[mode]
+    model = YOLO(str(PROJECT_DIR / "modelos" / config["archivo"]))
+    if config.get("clases"):
+        names = dict(model.names)
+        names.update(config["clases"])
+        model.model.names = names
+    return model
 
 
 def jpeg(frame):
@@ -40,7 +74,12 @@ def run_monitor(args, sync):
     models = {}
     previous_mode = None
     previous_offline = False
+    fps = None
+    window_ready = False
+    hud = Hud()
     last_event = {}
+    last_threat = None
+    frame_number = 0
     next_open = 0
     started = time.monotonic()
     title = "NAWI APU - Monitor local - Q para salir"
@@ -66,6 +105,7 @@ def run_monitor(args, sync):
                     camera.release()
                     camera = None
                     cv2.destroyAllWindows()
+                    window_ready = False
                     print("Cámara apagada. Esperando el siguiente comando.", flush=True)
                 sync.set_status("esperando")
                 time.sleep(0.1)
@@ -74,16 +114,28 @@ def run_monitor(args, sync):
                 sync.set_status("error")
                 time.sleep(1)
                 continue
-            if mode not in models:
-                path = PROJECT_DIR / "modelos" / f"{mode}.pt"
-                try:
-                    models[mode] = YOLO(str(path))
-                    print(f"Modelo cargado: {mode} | {models[mode].names}", flush=True)
-                except Exception as error:
-                    sync.set_status("error")
-                    print(f"No se pudo cargar el modelo {mode}: {error}", flush=True)
-                    time.sleep(3)
-                    continue
+            # Siempre se vigilan las amenazas junto con la especie elegida: si se monitorean
+            # tortugas y se acerca una persona o un perro, también se registra.
+            frame_number += 1
+            watch = [mode]
+            every = getattr(args, "amenazas_cada", 1)
+            if mode != "invasores" and every and frame_number % every == 0:
+                watch.append("invasores")
+            missing = [name for name in watch if name not in models]
+            try:
+                for name in missing:
+                    models[name] = cargar_modelo(name)
+                    clases = MODELOS[name].get("clases")
+                    print(
+                        f"Modelo cargado: {name} | "
+                        f"{list(clases.values()) if clases else models[name].names}",
+                        flush=True,
+                    )
+            except Exception as error:
+                sync.set_status("error")
+                print(f"No se pudo cargar el modelo: {error}", flush=True)
+                time.sleep(3)
+                continue
             if camera is None:
                 if time.monotonic() < next_open:
                     time.sleep(0.1)
@@ -112,53 +164,87 @@ def run_monitor(args, sync):
                 next_open = time.monotonic() + 3
                 sync.set_status("error")
                 continue
-            result = models[mode].predict(
-                frame,
-                conf=args.conf,
-                imgsz=args.imgsz,
-                iou=0.5,
-                device="cpu",
-                verbose=False,
-            )[0]
-            annotated = result.plot()
-            count = len(result.boxes)
+            results = {}
+            annotated = frame
+            for name in watch:
+                clases = MODELOS[name].get("clases")
+                results[name] = models[name].predict(
+                    frame,
+                    conf=args.conf,
+                    imgsz=args.imgsz,
+                    iou=0.5,
+                    device="cpu",
+                    verbose=False,
+                    classes=list(clases) if clases else None,
+                )[0]
+                # Se dibujan todas las detecciones sobre la misma imagen.
+                annotated = (
+                    results[name].plot()
+                    if annotated is frame
+                    else results[name].plot(img=annotated)
+                )
             sync.set_status("monitoreando")
-            if (
-                count
-                and time.monotonic() - last_event.get(mode, -args.interval)
-                >= args.interval
-            ):
+            for name, result in results.items():
+                found = len(result.boxes)
+                if not found or (
+                    time.monotonic() - last_event.get(name, -args.interval) < args.interval
+                ):
+                    continue
                 event = {
                     "evento_id": str(uuid.uuid4()),
                     "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "especie": mode,
-                    "cantidad": count,
+                    "especie": name,
+                    "cantidad": found,
                     "confianza": float(result.boxes.conf.max()),
                     "dispositivo": args.name,
                     "captura": jpeg(annotated),
                     "ubicacion": config.get("ubicacion"),
                 }
-                if mode == "invasores":
-                    labels = sorted(
-                        {
-                            result.names[int(value)]
-                            for value in result.boxes.cls.tolist()
-                        }
-                    )
+                if name == "invasores":
+                    labels = sorted({result.names[int(v)] for v in result.boxes.cls.tolist()})
                     event["tipo_evento"] = "Intrusión: " + ", ".join(labels)
-                    event["severidad"] = "advertencia"
+                    event["severidad"] = "advertencia" if mode == "invasores" else "alta"
+                    if mode != "invasores":
+                        print(f"⚠ Amenaza detectada mientras se vigilaba {mode}: {', '.join(labels)}", flush=True)
                 sync.enqueue(event)
-                last_event[mode] = time.monotonic()
+                last_event[name] = time.monotonic()
+            main = results[mode]
+            count = len(main.boxes)
+            threat = results.get("invasores") if mode != "invasores" else None
+            if threat is not None and len(threat.boxes):
+                last_threat = (
+                    time.monotonic(),
+                    sorted({threat.names[int(v)] for v in threat.boxes.cls.tolist()}),
+                )
             if not args.no_window:
-                fps = 1 / max(time.perf_counter() - frame_started, 0.001)
-                cv2.putText(
+                instant = 1 / max(time.perf_counter() - frame_started, 0.001)
+                # Promedio móvil: los FPS no "saltan" en pantalla.
+                fps = instant if fps is None else fps * 0.9 + instant * 0.1
+                if window_ready is False:
+                    # Ventana redimensionable y más grande, pensada para proyectar.
+                    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow(title, 960, 720)
+                    window_ready = True
+                labels = (
+                    sorted({main.names[int(v)] for v in main.boxes.cls.tolist()})
+                    if count and mode == "invasores"
+                    else None
+                )
+                # La alerta de amenaza se mantiene 2 s en pantalla aunque se analice cada N cuadros.
+                threat_labels = (
+                    last_threat[1]
+                    if last_threat and time.monotonic() - last_threat[0] < 2
+                    else None
+                )
+                hud.draw(
                     annotated,
-                    f"{mode} | {count} objetos | {fps:.1f} FPS",
-                    (12, 27),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 230, 230),
-                    2,
+                    mode,
+                    count,
+                    float(main.boxes.conf.max()) if count else None,
+                    fps,
+                    offline=bool(config.get("sin_conexion")),
+                    labels=labels,
+                    threat_labels=threat_labels,
                 )
                 cv2.imshow(title, annotated)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
@@ -187,6 +273,13 @@ def main():
     parser.add_argument("--imgsz", type=int, default=416)
     parser.add_argument("--interval", type=float, default=20)
     parser.add_argument(
+        "--amenazas-cada",
+        dest="amenazas_cada",
+        type=int,
+        default=1,
+        help="Buscar amenazas cada N cuadros también al vigilar una especie (0 = no). En la Raspberry Pi conviene 3.",
+    )
+    parser.add_argument(
         "--sin-whatsapp", dest="whatsapp", action="store_false", default=True
     )
     parser.add_argument("--whatsapp", dest="whatsapp", action="store_true")
@@ -211,7 +304,7 @@ def main():
     sync = AgentSync(args.url, key, args.name, RUNTIME_DIR, whatsapp=args.whatsapp)
     print(f"ÑAWI APU listo. Backend: {args.url}", flush=True)
     print(
-        "El programa espera los comandos 1, 2, 3 y 4 de WhatsApp. Ctrl+C para terminar.",
+        "Esperando órdenes de WhatsApp: 1 tortugas · 2 gaviotines · 3 pausar. Ctrl+C para terminar.",
         flush=True,
     )
     sync.start()
