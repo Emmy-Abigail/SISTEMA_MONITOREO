@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#153b50" />
+    <title>Ñawi Apu · Monitoreo costero</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='dashboard.css') }}"
+    />
+    <script
+      src="{{ url_for('static', filename='dashboard.js') }}"
+      defer
+    ></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Ñawi Apu, inicio"
+        ><span class="brand-mark" aria-hidden="true">◉</span
+        ><span>Ñawi Apu<small>Monitoreo costero</small></span></a
+      >
+      <nav aria-label="Navegación">
+        <a class="selected" href="#monitor">Monitoreo</a
+        ><a href="#actividad">Actividad y capturas</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="signal-dot" id="connection-dot"></span
+        ><span id="connection-label">Conectando al servidor</span>
+      </div>
+    </aside>
+    <main>
+      <header class="page-header">
+        <div>
+          <h1>Monitoreo costero</h1>
+        </div>
+        <div class="header-tools">
+          <span id="clock"></span
+          ><button class="button subtle" id="key-button" type="button">
+            Clave de control
+          </button>
+        </div>
+      </header>
+      <p class="notice" id="notice" role="status" hidden></p>
+      <section
+        class="monitor-layout"
+        id="monitor"
+        aria-label="Monitoreo de cámara"
+      >
+        <div class="camera-panel">
+          <div class="camera-toolbar">
+            <span
+              ><span class="signal-dot" id="camera-dot"></span
+              ><strong id="device-name">Cámara PC</strong></span
+            ><span id="device-status">Sin dispositivo conectado</span>
+          </div>
+          <div class="camera-stage">
+            <img
+              id="camera-image"
+              alt="Última imagen recibida del dispositivo de monitoreo"
+              hidden
+            />
+            <div class="camera-empty" id="camera-empty">
+              <span class="camera-symbol" aria-hidden="true">◎</span>
+              <h2>Esperando la cámara</h2>
+              <p>
+                Ejecuta el monitor en tu PC para recibir imágenes y detecciones.
+              </p>
+              <button
+                type="button"
+                class="button camera-help"
+                id="setup-button"
+              >
+                Cómo conectar mi cámara
+              </button>
+            </div>
+            <span class="camera-caption" id="camera-caption" hidden></span>
+          </div>
+          <div class="camera-footer">
+            <span>Vista del dispositivo · actualización cada 5 s</span
+            ><span id="last-frame">Sin imagen recibida</span>
+          </div>
+        </div>
+        <section class="monitor-controls" aria-label="Control y conteos">
+          <div class="control-heading">
+            <span class="section-kicker">Monitoreo</span
+            ><strong id="mode-label">Consultando estado</strong>
+          </div>
+          <label for="mode-select">Especie a monitorear</label
+          ><select id="mode-select">
+            <option value="tortugas">Tortugas</option>
+            <option value="gaviotines">Gaviotines</option>
+          </select>
+          <div class="control-buttons">
+            <button class="button primary" type="button" id="start-button">
+              Iniciar monitoreo</button
+            ><button class="button subtle" type="button" id="stop-button">
+              Detener
+            </button>
+          </div>
+          <p class="control-hint" id="control-hint">
+            El control se aplica cuando el monitor de la PC está conectado.
+          </p>
+          <div class="species-count">
+            <span
+              ><span class="species-icon turtle" aria-hidden="true">🐢</span
+              >Tortugas</span
+            ><strong id="turtle-count">0</strong>
+          </div>
+          <div class="species-count">
+            <span
+              ><span class="species-icon bird" aria-hidden="true">🐦</span
+              >Gaviotines</span
+            ><strong id="bird-count">0</strong>
+          </div>
+          <p class="count-caption">
+            Suma de objetos reportados en el período. Un individuo puede
+            aparecer en varias detecciones.
+          </p>
+        </section>
+      </section>
+      <section class="activity-section" id="actividad">
+        <div class="section-header">
+          <div>
+            <h2>Actividad de detección</h2>
+            <p id="event-caption">Sin detecciones registradas</p>
+          </div>
+          <div class="filters">
+            <label
+              >Especie<select id="species-filter">
+                <option value="todas">Todas las especies</option>
+                <option value="tortugas">Tortugas</option>
+                <option value="gaviotines">Gaviotines</option>
+              </select></label
+            ><label
+              >Período<select id="period-filter">
+                <option value="1">Última hora</option>
+                <option value="24" selected>Últimas 24 horas</option>
+                <option value="168">Últimos 7 días</option>
+              </select></label
+            >
+          </div>
+        </div>
+        <div class="chart-shell">
+          <div class="chart-label">
+            <span>Distribución de eventos</span><span id="chart-total">0 eventos</span>
+          </div>
+          <canvas
+            id="activity-chart"
+            role="img"
+            aria-label="Gráfico de eventos de detección por hora"
+          ></canvas>
+          <p class="chart-empty" id="chart-empty">
+            Las detecciones aparecerán aquí cuando el monitor identifique una
+            especie.
+          </p>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Captura</th>
+                <th scope="col">Especie</th>
+                <th scope="col">Cantidad</th>
+                <th scope="col">Confianza</th>
+                <th scope="col">Dispositivo</th>
+                <th scope="col">Fecha y hora</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
+          <div class="table-empty" id="table-empty">
+            <strong>Aún no hay detecciones en este período.</strong
+            ><span
+              >Conecta la cámara, selecciona una especie e inicia el
+              monitoreo.</span
+            >
+          </div>
+        </div>
+      </section>
+      <footer class="page-footer">
+        <span>Ñawi Apu · Vigilancia de tortugas y gaviotines</span
+        ><span id="last-update">Esperando actualización</span>
+      </footer>
+    </main>
+    <dialog id="key-dialog">
+      <form id="key-form">
+        <div class="dialog-heading">
+          <h2>Clave de control</h2>
+          <button
+            class="close-button"
+            type="button"
+            data-close
+            aria-label="Cerrar"
+          >
+            ×
+          </button>
+        </div>
+        <p>
+          Usa el mismo valor de ALERTA_KEY que configuraste en Railway y en el
+          monitor de tu PC.
+        </p>
+        <label for="control-key">Clave compartida</label
+        ><input id="control-key" type="password" autocomplete="off" required />
+        <p class="small-note">
+          Se conserva en esta pestaña hasta que cierres la sesión del navegador.
+        </p>
+        <button class="button primary" type="submit">Guardar clave</button>
+      </form>
+    </dialog>
+    <dialog id="setup-dialog">
+      <div class="dialog-heading">
+        <h2>Conectar la cámara de tu PC</h2>
+        <button
+          class="close-button"
+          type="button"
+          data-close
+          aria-label="Cerrar"
+        >
+          ×
+        </button>
+      </div>
+      <p>
+        Desde la carpeta del proyecto, ejecuta el monitor con el Python del
+        entorno que tiene YOLO instalado.
+      </p>
+      <pre><code id="setup-command"></code></pre>
+      <p>
+        El programa te pedirá la clave compartida si el servidor la requiere.
+        Mantén la PC encendida y el programa abierto.
+      </p>
+      <p>
+        Los comandos y la instalación están en
+        <strong>docs/DASHBOARD.md</strong>.
+      </p>
+    </dialog>
+    <dialog id="image-dialog">
+      <div class="dialog-heading">
+        <h2 id="image-title">Captura de detección</h2>
+        <button
+          class="close-button"
+          type="button"
+          data-close
+          aria-label="Cerrar"
+        >
+          ×
+        </button>
+      </div>
+      <img id="detail-image" alt="Captura de la detección seleccionada" />
+    </dialog>
+  </body>
+</html>

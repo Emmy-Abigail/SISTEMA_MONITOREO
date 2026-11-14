@@ -33,3 +33,6 @@ Thumbs.db
 *.key
 *.pem
 credentials.json
+
+# Datos y capturas del dashboard
+.runtime/

@@ -1,25 +1,35 @@
 import os
 import json
 import time
+import shutil
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from datetime import datetime
+from utils.dashboard import initialize, configured_mode, clear_mode, save_detection
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["ALERTA_KEY"] = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
+initialize(app)
 
 # -----------------------
 # Configuración
 # -----------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = str(app.config["MONITOR_DATA_DIR"])
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# NOTA PARA RAILWAY: Los archivos JSON se borran cada vez que redepsliegas.
-# Para producción real, deberías usar una base de datos (Postgres/Redis).
-# Para prototipo, esto funciona bien.
+# El volumen de Railway conserva los archivos entre despliegues.
 USUARIOS_FILE = os.path.join(DATA_DIR, "usuarios.json")
 ESTADOS_FILE = os.path.join(DATA_DIR, "estados.json")
+
+for name in ("usuarios.json", "estados.json"):
+    old_path = os.path.join(LEGACY_DATA_DIR, name)
+    new_path = os.path.join(DATA_DIR, name)
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+        shutil.copyfile(old_path, new_path)
 
 # Crear archivos si no existen
 for f in [USUARIOS_FILE, ESTADOS_FILE]:
@@ -32,7 +42,8 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
-DASHBOARD_URL = "https://tu-grafana-o-web.railway.app" # <--- PON TU LINK AQUÍ
+DASHBOARD_URL = os.environ.get(
+    "DASHBOARD_URL", "https://sistemamonitoreo-production-8883a6d5.up.railway.app/")
 
 # Guardamos el tiempo de inicio para calcular el Uptime
 TIEMPO_INICIO = datetime.now()
@@ -169,12 +180,13 @@ def whatsapp_reply():
     if incoming_msg in ["4", "stop", "detener", "apagar"]:
         estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
+        clear_mode()
         msg.body("🛑 *SISTEMA DETENIDO*\n\nÑawi Apu entra en modo reposo (Standby).\n\n_Escribe *Menu* para reactivar._")
         return str(resp)
 
     # 4. Estado / Dashboard (Opción 5)
     if incoming_msg in ["5", "estado", "status", "dashboard"]:
-        estado_user = estados.get(from_number, {}).get("modo", "detenido")
+        estado_user = configured_mode() or estados.get(from_number, {}).get("modo", "detenido")
         msg.body(generar_telemetria(estado_user))
         return str(resp)
 
@@ -190,6 +202,7 @@ def whatsapp_reply():
     if seleccion:
         estados[from_number] = {"modo": seleccion, "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
+        clear_mode()
 
         emojis = {"tortugas": "🐢", "gaviotines": "🐦", "invasores": "⚠️"}
         emoji = emojis.get(seleccion, "👁️")
@@ -213,6 +226,9 @@ def whatsapp_reply():
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
     """La Raspberry consulta esto para saber si prender la cámara o dormir"""
+    dashboard_mode = configured_mode()
+    if dashboard_mode:
+        return jsonify({"mode": dashboard_mode})
     estados = cargar_json(ESTADOS_FILE)
     
     # Buscamos si ALGUIEN tiene el sistema activo. 
@@ -250,6 +266,11 @@ def recibir_alerta():
         mensaje_prefix = data.get("mensaje_prefix", "🔔 *DETECCIÓN CONFIRMADA*")
     except:
         return jsonify({"error": "bad request"}), 400
+
+    try:
+        save_detection(data)
+    except ValueError as error:
+        app.logger.warning("Alerta sin registro en el dashboard: %s", error)
 
     usuarios = cargar_json(USUARIOS_FILE)
     texto = (
