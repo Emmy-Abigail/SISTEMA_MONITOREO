@@ -148,7 +148,10 @@ function notice(message) {
   $("notice").hidden = !message;
 }
 async function api(path, options = {}) {
-  const response = await fetch(path, { cache: "no-store", ...options });
+  // Con la clave guardada, el servidor devuelve coordenadas exactas; sin ella, aproximadas.
+  const headers = { ...(options.headers || {}) };
+  if (key && !headers["X-ALERTA-KEY"]) headers["X-ALERTA-KEY"] = key;
+  const response = await fetch(path, { cache: "no-store", ...options, headers });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(
@@ -355,12 +358,16 @@ async function refresh() {
       ? "Vista demostrativa"
       : "Servidor conectado";
     $("storage-status").textContent = data.almacenamiento_persistente
-      ? "ÑAWI APU GOGO · Conservación en tiempo real"
+      ? "ÑAWI APU · Conservación en tiempo real"
       : "Historial temporal · Conecta un volumen en Railway";
     notice(
-      data.almacenamiento_persistente || demo
+      demo
         ? ""
-        : "Conecta un volumen al servicio Railway para conservar el historial entre despliegues.",
+        : !data.almacenamiento_persistente
+          ? "Conecta un volumen al servicio Railway para conservar el historial entre despliegues."
+          : data.coordenadas_exactas === false
+            ? "Ubicaciones aproximadas (~1 km) para proteger los nidos. Introduce la clave de control en Configuración para ver las exactas."
+            : "",
     );
   } catch (error) {
     $("server-dot").className = "status-dot error";
@@ -931,9 +938,27 @@ function showSettings() {
 }
 function exportData() {
   if (!demo) {
-    const link = document.createElement("a");
-    link.href = "/api/exportar?" + params();
-    link.click();
+    // El CSV incluye coordenadas exactas, por eso el servidor exige la clave.
+    mutate(async () => {
+      const response = await fetch("/api/exportar?" + params(), {
+        cache: "no-store",
+        headers: { "X-ALERTA-KEY": key },
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        const error = new Error(
+          result.error || "El servidor respondió con HTTP " + response.status + ".",
+        );
+        error.status = response.status;
+        throw error;
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "nawi-apu-detecciones.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
     return;
   }
   const rows = [
@@ -961,7 +986,7 @@ function exportData() {
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = "nawi-apu-gogo-demostracion.csv";
+  link.download = "nawi-apu-demostracion.csv";
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -997,6 +1022,7 @@ $("settings-form").addEventListener("submit", async (event) => {
     pendingAction = null;
     await mutate(action);
   } else notify("Configuración guardada.");
+  refresh();
 });
 for (const input of document.querySelectorAll('input[name="theme"]'))
   input.addEventListener("change", () => applyTheme(input.value));

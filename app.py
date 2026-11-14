@@ -2,13 +2,20 @@ import os
 import json
 import time
 import shutil
-from flask import Flask, request, jsonify
+import tempfile
+import threading
+from flask import Flask, request, jsonify, abort
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-from datetime import datetime
-from utils.dashboard import initialize, configured_mode, set_mode, save_detection, prototype, connect, authorize
+from twilio.request_validator import RequestValidator
+from twilio.base.exceptions import TwilioRestException
+from werkzeug.middleware.proxy_fix import ProxyFix
+from datetime import datetime, timezone
+from utils.dashboard import initialize, configured_mode, set_mode, save_detection, prototype, connect, authorize, public_location
 
 app = Flask(__name__)
+# Railway termina HTTPS en su proxy: sin esto Flask vería "http://" y la firma de Twilio no coincidiría.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 app.config["ALERTA_KEY"] = os.environ.get("ALERTA_KEY", "")
 initialize(app)
@@ -44,6 +51,34 @@ TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
 ALERTA_KEY = os.environ.get("ALERTA_KEY", "")
 DASHBOARD_URL = os.environ.get(
     "DASHBOARD_URL", "https://sistemamonitoreo-production-8883a6d5.up.railway.app/")
+# URL pública exacta configurada en Twilio. Solo hace falta si difiere de la que ve Flask.
+TWILIO_WEBHOOK_URL = os.environ.get("TWILIO_WEBHOOK_URL", "").strip()
+# Si es "0", no se valida la firma de Twilio (solo para pruebas locales).
+VALIDAR_FIRMA_TWILIO = os.environ.get("VALIDAR_FIRMA_TWILIO", "1") != "0"
+
+
+def normalizar_numero(numero):
+    """Convierte '+51 999 888 777' o 'whatsapp:+51999888777' en 'whatsapp:+51999888777'."""
+    numero = "".join(str(numero).split())
+    if not numero:
+        return ""
+    return numero if numero.startswith("whatsapp:") else f"whatsapp:{numero}"
+
+
+# Números que pueden usar el bot y recibir alertas, separados por comas.
+# Vacío = cualquiera que escriba al bot queda registrado (solo recomendable en pruebas).
+WHATSAPP_AUTORIZADOS = {
+    normalizar_numero(n) for n in os.environ.get("WHATSAPP_AUTORIZADOS", "").split(",") if n.strip()
+}
+
+
+def numero_autorizado(numero):
+    return not WHATSAPP_AUTORIZADOS or normalizar_numero(numero) in WHATSAPP_AUTORIZADOS
+
+
+# Una alerta "procesando" más antigua que esto se considera interrumpida y se reintenta.
+ALERTA_TRABADA_SEGUNDOS = 120
+_json_lock = threading.Lock()
 
 # Guardamos el tiempo de inicio para calcular el Uptime
 TIEMPO_INICIO = datetime.now()
@@ -53,7 +88,7 @@ TIEMPO_INICIO = datetime.now()
 # -----------------------
 def generar_menu_principal():
     """Genera el menú principal profesional para ÑAWI APU"""
-    return """*ÑAWI APU GOGO* | _Guardián costero_
+    return """*ÑAWI APU* | _Guardián costero_
 ─────────────────────
 *Bienvenido, Encargado de vigilancia.*
 
@@ -84,7 +119,7 @@ def generar_telemetria(modo_actual):
 
     estado_icono = "🟢 ONLINE" if modo_actual != "detenido" else "🔴 STANDBY"
 
-    return f"""📊 *TELEMETRÍA DE ÑAWI APU GOGO*
+    return f"""📊 *TELEMETRÍA DE ÑAWI APU*
 `Estado: {estado_icono}`
 
 ⚙️ *SISTEMA*
@@ -110,16 +145,28 @@ def cargar_json(ruta):
         return {}
 
 def guardar_json(ruta, data):
+    # Escritura atómica: se escribe un archivo temporal y se reemplaza de una vez,
+    # así un corte o dos peticiones simultáneas nunca dejan el JSON a medias.
     try:
-        with open(ruta, "w") as f:
-            json.dump(data, f, indent=4)
+        with _json_lock:
+            fd, temporal = tempfile.mkstemp(dir=os.path.dirname(ruta), suffix=".tmp")
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=4)
+            os.replace(temporal, ruta)
     except Exception as e:
         app.logger.error(f"Error guardando JSON {ruta}: {e}")
 
+
+# Errores de Twilio que no se arreglan reintentando (número inválido, no unido al
+# Sandbox, cuenta trial restringida...). Reintentarlos solo gasta llamadas.
+ESTADOS_HTTP_PERMANENTES = {400, 403, 404}
+
+
 def enviar_whatsapp(numero_destino, texto, media_url=None):
+    """Devuelve "ok", "permanente" (no reintentar) o "temporal" (reintentar más tarde)."""
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         app.logger.error("❌ Credenciales Twilio no configuradas")
-        return False
+        return "temporal"
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
@@ -128,26 +175,64 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
 
         message = client.messages.create(**msg_params)
         app.logger.info(f"✅ Mensaje a {numero_destino} - SID: {message.sid}")
-        return True
+        return "ok"
+    except TwilioRestException as e:
+        tipo = "permanente" if e.status in ESTADOS_HTTP_PERMANENTES else "temporal"
+        app.logger.error(f"❌ Error enviando WhatsApp ({tipo}, código {e.code}): {e.msg}")
+        return tipo
     except Exception as e:
-        app.logger.error(f"❌ Error enviando WhatsApp: {e}")
-        return False
+        app.logger.error(f"❌ Error enviando WhatsApp (temporal): {e}")
+        return "temporal"
+
+
+def resultado_envio(valor):
+    # Compatibilidad: True/False de versiones anteriores equivalen a ok/temporal.
+    if valor is True:
+        return "ok"
+    if valor is False:
+        return "temporal"
+    return valor
+
+
+def firma_twilio_valida():
+    if not VALIDAR_FIRMA_TWILIO:
+        return True
+    if not TWILIO_AUTH_TOKEN:
+        # Sin token no se puede validar: se permite en local, nunca en Railway.
+        return not os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    firma = request.headers.get("X-Twilio-Signature", "")
+    url = TWILIO_WEBHOOK_URL or request.url
+    valida = RequestValidator(TWILIO_AUTH_TOKEN).validate(url, request.form, firma)
+    if not valida:
+        app.logger.warning(f"🔒 Webhook rechazado: firma de Twilio inválida para {url}")
+    return valida
 
 # -----------------------
 # Webhook de WhatsApp
 # -----------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    from_number = request.values.get("From", "").strip()
+    # Solo Twilio puede usar este webhook: sin esto, cualquiera podría enviar "4" y apagar la vigilancia.
+    if not firma_twilio_valida():
+        abort(403)
+
+    from_number = normalizar_numero(request.values.get("From", ""))
     incoming_msg = request.values.get("Body", "").strip().lower()
 
     # 🔍 LOG PARA DEBUG
     app.logger.info(f"📱 Webhook | De: {from_number} | Msg: '{incoming_msg}'")
 
-    usuarios = cargar_json(USUARIOS_FILE)
-    estados = cargar_json(ESTADOS_FILE)
     resp = MessagingResponse()
     msg = resp.message()
+
+    if not numero_autorizado(from_number):
+        app.logger.warning(f"🔒 Número no autorizado: {from_number}")
+        msg.body("🔒 Este número no está autorizado para usar ÑAWI APU.\n"
+                 "Pide al administrador que lo agregue a la lista de encargados.")
+        return str(resp)
+
+    usuarios = cargar_json(USUARIOS_FILE)
+    estados = cargar_json(ESTADOS_FILE)
 
     # ---- 1. Registrar si no existe ----
     if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
@@ -173,7 +258,7 @@ def whatsapp_reply():
         guardar_json(USUARIOS_FILE, usuarios)
 
         if incoming_msg.startswith("join"):
-            msg.body(f"✅ *¡Bienvenido a ÑAWI APU GOGO!*\n\n{generar_menu_principal()}")
+            msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
             return str(resp)
 
     # 3. Detener (Opción 4)
@@ -226,9 +311,11 @@ def whatsapp_reply():
 @app.route("/config", methods=["GET"])
 def obtener_configuracion():
     """La Raspberry consulta esto para saber si prender la cámara o dormir"""
+    # Sin ALERTA_KEY la ubicación sale aproximada: la exacta solo la recibe el agente de cámara.
+    ubicacion = public_location(prototype())
     dashboard_mode = configured_mode()
     if dashboard_mode:
-        return jsonify({"mode": dashboard_mode, "ubicacion": prototype()})
+        return jsonify({"mode": dashboard_mode, "ubicacion": ubicacion})
     estados = cargar_json(ESTADOS_FILE)
 
     # Buscamos si ALGUIEN tiene el sistema activo.
@@ -244,7 +331,7 @@ def obtener_configuracion():
 
     # Log para debug en Railway
     app.logger.info(f"📡 Robot consulta config -> Modo: {modo}")
-    return jsonify({"mode": modo, "ubicacion": prototype()})
+    return jsonify({"mode": modo, "ubicacion": ubicacion})
 
 # -----------------------
 # Endpoint Alerta (Recibe de Raspberry)
@@ -273,16 +360,26 @@ def recibir_alerta():
 
     event_id = data.get("evento_id")
     if event_id:
+        ahora = datetime.now(timezone.utc)
         with connect() as connection:
             claim = connection.execute(
-                "INSERT OR IGNORE INTO alert_runs(evento_id,estado) VALUES(?, 'procesando')", (str(event_id),))
+                "INSERT OR IGNORE INTO alert_runs(evento_id,estado,fecha) VALUES(?, 'procesando', ?)",
+                (str(event_id), ahora.isoformat()))
             if not claim.rowcount:
                 previous = connection.execute("SELECT * FROM alert_runs WHERE evento_id=?", (str(event_id),)).fetchone()
-                if previous["estado"] != "pendiente":
+                # Si el servidor se reinició a mitad de un envío, la alerta quedaría "procesando"
+                # para siempre. Pasado un tiempo prudente se considera interrumpida y se retoma.
+                trabada = previous["estado"] == "procesando" and (
+                    not previous["fecha"]
+                    or (ahora - datetime.fromisoformat(previous["fecha"])).total_seconds() > ALERTA_TRABADA_SEGUNDOS
+                )
+                if previous["estado"] != "pendiente" and not trabada:
                     return jsonify({"status": previous["estado"], "enviados": previous["enviados"], "duplicado": True}), (503 if previous["estado"] == "procesando" else 200)
-                connection.execute("UPDATE alert_runs SET estado='procesando' WHERE evento_id=?", (str(event_id),))
+                connection.execute("UPDATE alert_runs SET estado='procesando',fecha=? WHERE evento_id=?",
+                                   (ahora.isoformat(), str(event_id)))
 
-    usuarios = cargar_json(USUARIOS_FILE)
+    # Solo se alerta a encargados autorizados (si hay lista); los números antiguos se ignoran.
+    usuarios = {numero: datos for numero, datos in cargar_json(USUARIOS_FILE).items() if numero_autorizado(numero)}
     texto = (
         f"{mensaje_prefix}\n"
         "─────────────────────\n"
@@ -294,28 +391,46 @@ def recibir_alerta():
     if imagen_url: texto += "\n📸 _Evidencia adjunta:_"
 
     enviados = 0
-    fallidos = 0
+    fallidos = 0      # errores temporales: vale la pena reintentar
+    rechazados = 0    # errores permanentes: reintentar no sirve
     for numero in usuarios.keys():
         if event_id:
             with connect() as connection:
                 accepted = connection.execute("SELECT 1 FROM alert_deliveries WHERE evento_id=? AND destinatario=?", (str(event_id),numero)).fetchone()
+                rejected = connection.execute("SELECT 1 FROM alert_rejections WHERE evento_id=? AND destinatario=?", (str(event_id),numero)).fetchone()
             if accepted:
                 enviados += 1
                 continue
-        if enviar_whatsapp(numero, texto, media_url=imagen_url):
+            if rejected:
+                rechazados += 1
+                continue
+        resultado = resultado_envio(enviar_whatsapp(numero, texto, media_url=imagen_url))
+        if resultado == "ok":
             enviados += 1
             if event_id:
                 with connect() as connection:
                     connection.execute("INSERT OR IGNORE INTO alert_deliveries VALUES(?,?)", (str(event_id),numero))
+        elif resultado == "permanente":
+            rechazados += 1
+            if event_id:
+                with connect() as connection:
+                    connection.execute("INSERT OR IGNORE INTO alert_rejections VALUES(?,?)", (str(event_id),numero))
         else:
             fallidos += 1
 
-    status = "pendiente" if fallidos else "ok"
+    # Solo los errores temporales hacen que el agente reintente (503).
+    # Los permanentes se registran y se responde 200 para no reintentar sin fin.
+    if fallidos:
+        status = "pendiente"
+    elif rechazados:
+        status = "rechazado" if not enviados else "parcial"
+    else:
+        status = "ok"
     if event_id:
         with connect() as connection:
             connection.execute("UPDATE alert_runs SET estado=?,enviados=? WHERE evento_id=?", (status,enviados,str(event_id)))
 
-    return jsonify({"status": status, "enviados": enviados, "fallidos": fallidos}), (503 if fallidos else 200)
+    return jsonify({"status": status, "enviados": enviados, "fallidos": fallidos, "rechazados": rechazados}), (503 if fallidos else 200)
 
 # -----------------------
 # Ejecución

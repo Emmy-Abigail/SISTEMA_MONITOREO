@@ -1,4 +1,4 @@
-"""Monitor local de ÑAWI APU GOGO controlado desde WhatsApp o el dashboard."""
+"""Monitor local de ÑAWI APU controlado desde WhatsApp o el dashboard."""
 
 import argparse
 import base64
@@ -39,10 +39,11 @@ def run_monitor(args, sync):
     camera = None
     models = {}
     previous_mode = None
+    previous_offline = False
     last_event = {}
     next_open = 0
     started = time.monotonic()
-    title = "NAWI APU GOGO - Monitor local - Q para salir"
+    title = "NAWI APU - Monitor local - Q para salir"
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     try:
         while not args.duration or time.monotonic() - started < args.duration:
@@ -51,6 +52,15 @@ def run_monitor(args, sync):
             if mode != previous_mode:
                 print(f"Modo recibido: {mode}", flush=True)
                 previous_mode = mode
+            offline = bool(config.get("sin_conexion"))
+            if offline != previous_offline and previous_mode is not None:
+                print(
+                    f"Sin conexión con el servidor: se mantiene el modo {mode} y los eventos esperan en la cola."
+                    if offline
+                    else "Conexión recuperada.",
+                    flush=True,
+                )
+                previous_offline = offline
             if mode == "detenido":
                 if camera is not None:
                     camera.release()
@@ -199,7 +209,7 @@ def main():
     if not key and not local:
         key = getpass.getpass("ALERTA_KEY del backend (oculta): ")
     sync = AgentSync(args.url, key, args.name, RUNTIME_DIR, whatsapp=args.whatsapp)
-    print(f"ÑAWI APU GOGO listo. Backend: {args.url}", flush=True)
+    print(f"ÑAWI APU listo. Backend: {args.url}", flush=True)
     print(
         "El programa espera los comandos 1, 2, 3 y 4 de WhatsApp. Ctrl+C para terminar.",
         flush=True,

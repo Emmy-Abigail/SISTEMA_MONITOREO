@@ -1,4 +1,4 @@
-# Continuar desde la laptop — ÑAWI APU GOGO
+# Continuar desde la laptop — ÑAWI APU
 
 Actualizado el 13 de noviembre de 2026.
 

@@ -10,6 +10,12 @@ from pathlib import Path
 
 import requests
 
+MODES = {"tortugas", "gaviotines", "invasores", "detenido"}
+# Respuestas que no cambian por mucho que se reintente (datos inválidos, ruta inexistente...).
+PERMANENT_HTTP_STATUS = {400, 404, 413, 422}
+# Tras estos intentos fallidos se abandona solo la ALERTA (la detección ya quedó guardada).
+MAX_ALERT_ATTEMPTS = 10
+
 
 @contextmanager
 def queue_connection(path, timeout=5):
@@ -40,7 +46,10 @@ class AgentSync:
             )
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.config = {"mode": "detenido", "ubicacion": None}
+        # Último modo recibido, guardado en disco: si la Pi se reinicia sin señal,
+        # retoma la vigilancia en lugar de quedarse detenida.
+        self.config_file = Path(directory) / f"ultimo-modo-{identity}.json"
+        self.config = self.load_config()
         self.config_time = 0
         self.status = "esperando"
         self.authorization_failed = False
@@ -55,10 +64,31 @@ class AgentSync:
         self.thread.start()
         self.sender.start()
 
+    def load_config(self):
+        try:
+            config = json.loads(self.config_file.read_text(encoding="utf-8"))
+            if isinstance(config, dict) and config.get("mode") in MODES:
+                return config
+        except (OSError, ValueError):
+            pass
+        return {"mode": "detenido", "ubicacion": None}
+
+    def save_config(self, config):
+        try:
+            temporary = self.config_file.with_suffix(".tmp")
+            temporary.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(self.config_file)
+        except OSError as error:
+            print(f"No se pudo guardar el último modo: {error}", flush=True)
+
     def snapshot(self):
         with self.lock:
             config = dict(self.config)
-            if time.monotonic() - self.config_time > 12 or self.authorization_failed:
+            # Sin conexión se MANTIENE el último modo: un sistema de vigilancia no debe
+            # apagarse justo cuando falla la señal (los eventos esperan en la cola).
+            # Solo se detiene por orden explícita o si la clave es rechazada.
+            config["sin_conexion"] = time.monotonic() - self.config_time > 12
+            if self.authorization_failed:
                 config["mode"] = "detenido"
             return config
 
@@ -77,16 +107,14 @@ class AgentSync:
         response = self.session.get(f"{self.url}/config", timeout=4)
         response.raise_for_status()
         config = response.json()
-        if config.get("mode") not in {
-            "tortugas",
-            "gaviotines",
-            "invasores",
-            "detenido",
-        }:
+        if config.get("mode") not in MODES:
             raise ValueError("El servidor devolvió un modo desconocido.")
         with self.lock:
+            changed = config != self.config
             self.config = config
             self.config_time = time.monotonic()
+        if changed:
+            self.save_config(config)
 
     def heartbeat(self, state=None):
         with self.lock:
@@ -97,7 +125,9 @@ class AgentSync:
             timeout=4,
         )
         with self.lock:
-            self.authorization_failed = response.status_code in {401, 403, 503}
+            # Solo un rechazo de la clave detiene la cámara. Un 502/503 suele ser
+            # Railway reiniciando y no debe interrumpir la vigilancia.
+            self.authorization_failed = response.status_code in {401, 403}
         response.raise_for_status()
 
     def flush_one(self):
@@ -110,8 +140,13 @@ class AgentSync:
         if row is None:
             return
         event = json.loads(row["payload"])
+        stage = row["etapa"]
+        previous_attempts = row["intentos"]
+        if stage == "alerta" and previous_attempts >= MAX_ALERT_ATTEMPTS:
+            self.discard(row["id"], "alerta abandonada tras varios intentos (la detección sí quedó guardada)")
+            return
         try:
-            if row["etapa"] == "deteccion":
+            if stage == "deteccion":
                 response = self.outgoing.post(
                     f"{self.url}/api/detecciones", json=event, timeout=8
                 )
@@ -125,6 +160,7 @@ class AgentSync:
                         "UPDATE pendientes SET etapa='alerta',intentos=0,reintento=0 WHERE id=?",
                         (row["id"],),
                     )
+                stage, previous_attempts = "alerta", 0
             if self.whatsapp:
                 alert = {key: value for key, value in event.items() if key != "captura"}
                 if event.get("captura") and self.url.startswith("https://"):
@@ -137,20 +173,31 @@ class AgentSync:
                 response.raise_for_status()
                 result = response.json()
                 sent = result.get("enviados", 0)
-                print(
-                    f"Solicitud WhatsApp procesada: {len(sent) if isinstance(sent,list) else sent} envíos aceptados",
-                    flush=True,
-                )
+                rejected = result.get("rechazados", 0)
+                message = f"Solicitud WhatsApp procesada: {len(sent) if isinstance(sent,list) else sent} envíos aceptados"
+                if rejected:
+                    message += f", {rejected} rechazados por Twilio (revisa los registros del servidor)"
+                print(message, flush=True)
             with queue_connection(self.database, timeout=5) as connection:
                 connection.execute("DELETE FROM pendientes WHERE id=?", (row["id"],))
         except (requests.RequestException, ValueError) as error:
-            attempts = row["intentos"] + 1
+            status = getattr(getattr(error, "response", None), "status_code", None)
+            if status in PERMANENT_HTTP_STATUS:
+                # Reintentar no lo arreglaría: se descarta para no bloquear la cola.
+                self.discard(row["id"], f"{stage} rechazada por el servidor ({status}): {error}")
+                return
+            attempts = previous_attempts + 1
             with queue_connection(self.database, timeout=5) as connection:
                 connection.execute(
                     "UPDATE pendientes SET intentos=?,reintento=? WHERE id=?",
                     (attempts, time.time() + min(60, 2 ** min(attempts, 5)), row["id"]),
                 )
-            print(f"Evento conservado para reintento: {error}", flush=True)
+            print(f"Evento conservado para reintento ({stage}, intento {attempts}): {error}", flush=True)
+
+    def discard(self, event_id, reason):
+        with queue_connection(self.database, timeout=5) as connection:
+            connection.execute("DELETE FROM pendientes WHERE id=?", (event_id,))
+        print(f"Evento descartado: {reason}", flush=True)
 
     def run(self):
         next_heartbeat = 0

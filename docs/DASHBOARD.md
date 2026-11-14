@@ -1,4 +1,4 @@
-# ÑAWI APU GOGO — Dashboard y monitoreo desde WhatsApp
+# ÑAWI APU — Dashboard y monitoreo desde WhatsApp
 
 ## Qué está implementado
 

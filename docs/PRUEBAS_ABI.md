@@ -1,4 +1,4 @@
-# Entrega a Abi — ÑAWI APU GOGO
+# Entrega a Abi — ÑAWI APU
 
 El código del dashboard y del agente está en **Emmy-Abigail/SISTEMA_MONITOREO, rama main**. El rediseño está en `32a8c8a`, con limpieza posterior en `b1eb1e4`. Las credenciales privadas no están en Git.
 
@@ -12,7 +12,7 @@ El código del dashboard y del agente está en **Emmy-Abigail/SISTEMA_MONITOREO,
 ## Pendientes de infraestructura
 
 1. En Railway, conservar el repositorio de Abi y rama main. Desplegar el último commit con **Ctrl+K → Deploy Latest Commit**. La última comprobación del dominio devolvió 404; subir código a GitHub no confirmó un despliegue nuevo.
-2. Abrir `https://sistemamonitoreo-production-8883a6d5.up.railway.app/` y comprobar que carga ÑAWI APU GOGO. `/config` debe devolver `mode` y `ubicacion`.
+2. Abrir `https://sistemamonitoreo-production-8883a6d5.up.railway.app/` y comprobar que carga ÑAWI APU. `/config` debe devolver `mode` y `ubicacion`.
 3. Verificar las variables de Railway: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` y `ALERTA_KEY`. El usuario indicó que las completó; sus valores no fueron verificados en esta sesión.
 4. Agregar/verificar un volumen montado en `/data`, con una sola réplica. Sin volumen, el historial puede perderse al desplegar.
 5. En el Sandbox de la misma cuenta Twilio, guardar el webhook `https://sistemamonitoreo-production-8883a6d5.up.railway.app/whatsapp`, método POST. Vincular el teléfono con el código y número que muestre ese Sandbox.

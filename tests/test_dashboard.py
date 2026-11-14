@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 
 class DashboardTests(unittest.TestCase):
@@ -25,6 +26,9 @@ class DashboardTests(unittest.TestCase):
         cls.connect = staticmethod(connect)
         cls.app.config.update(TESTING=True, ALERTA_KEY="test-dashboard-key")
         cls.module.ALERTA_KEY = "test-dashboard-key"
+        # Las pruebas no dependen de las credenciales reales que pueda tener el entorno.
+        cls.module.TWILIO_AUTH_TOKEN = None
+        cls.module.WHATSAPP_AUTORIZADOS = set()
         cls.headers = {"X-ALERTA-KEY": "test-dashboard-key"}
 
     @classmethod
@@ -53,7 +57,7 @@ class DashboardTests(unittest.TestCase):
     def test_dashboard_and_existing_menu(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("ÑAWI APU GOGO", response.get_data(as_text=True))
+        self.assertIn("ÑAWI APU", response.get_data(as_text=True))
         response = self.client.post("/whatsapp", data={"Body": "menu"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("tortugas", response.get_data(as_text=True).lower())
@@ -273,7 +277,12 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/resumen").json["kpis"]["invasores"]["valor"], 5
         )
-        response = self.client.get("/api/exportar?especie=invasores")
+        self.assertEqual(
+            self.client.get("/api/exportar?especie=invasores").status_code, 401
+        )
+        response = self.client.get(
+            "/api/exportar?especie=invasores", headers=self.headers
+        )
         self.assertEqual(response.status_code, 200)
         self.assertIn("Intrusión de perro", response.data.decode("utf-8-sig"))
         self.assertEqual(
@@ -487,11 +496,180 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM pendientes").fetchone()[0], 0
             )
+        # Sin conexión se mantiene el último modo (la vigilancia no se apaga por mala señal).
         second.config = {"mode": "tortugas"}
+        snapshot = second.snapshot()
+        self.assertEqual(snapshot["mode"], "tortugas")
+        self.assertTrue(snapshot["sin_conexion"])
+        # Pero si el servidor rechaza la clave, se detiene.
+        second.authorization_failed = True
         self.assertEqual(second.snapshot()["mode"], "detenido")
         for agent in (first, second):
             agent.session.close()
             agent.outgoing.close()
+
+    # ---- Correcciones de arquitectura ----
+
+    def test_permanent_twilio_rejection_is_not_retried(self):
+        Path(self.module.USUARIOS_FILE).write_text(
+            json.dumps({"whatsapp:+51000000001": {}, "whatsapp:+51000000002": {}})
+        )
+        event = {"evento_id": "rechazo", "cantidad": 1}
+        with patch.object(
+            self.module, "enviar_whatsapp", side_effect=["ok", "permanente"]
+        ) as sender:
+            first = self.client.post("/alerta", json=event, headers=self.headers)
+            second = self.client.post("/alerta", json=event, headers=self.headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json["rechazados"], 1)
+        self.assertEqual(first.json["status"], "parcial")
+        self.assertTrue(second.json["duplicado"])
+        self.assertEqual(sender.call_count, 2)
+
+    def test_twilio_errors_are_classified(self):
+        from twilio.base.exceptions import TwilioRestException
+
+        with patch.multiple(
+            self.module,
+            TWILIO_ACCOUNT_SID="AC1",
+            TWILIO_AUTH_TOKEN="token",
+            TWILIO_WHATSAPP_FROM="whatsapp:+1",
+        ), patch.object(self.module, "Client") as client:
+            create = client.return_value.messages.create
+            create.side_effect = TwilioRestException(400, "uri", "trial", code=21654)
+            self.assertEqual(self.module.enviar_whatsapp("whatsapp:+2", "x"), "permanente")
+            create.side_effect = TwilioRestException(503, "uri", "caído")
+            self.assertEqual(self.module.enviar_whatsapp("whatsapp:+2", "x"), "temporal")
+            create.side_effect = None
+            self.assertEqual(self.module.enviar_whatsapp("whatsapp:+2", "x"), "ok")
+
+    def test_stuck_alert_is_reclaimed(self):
+        Path(self.module.USUARIOS_FILE).write_text(
+            json.dumps({"whatsapp:+51000000001": {}})
+        )
+        with self.app.app_context(), self.connect() as connection:
+            connection.execute(
+                "INSERT INTO alert_runs(evento_id,estado,fecha) VALUES('trabada','procesando',?)",
+                ("2026-01-01T00:00:00+00:00",),
+            )
+            connection.execute(
+                "INSERT INTO alert_runs(evento_id,estado,fecha) VALUES('en-curso','procesando',?)",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            reclaimed = self.client.post(
+                "/alerta", json={"evento_id": "trabada", "cantidad": 1}, headers=self.headers
+            )
+            busy = self.client.post(
+                "/alerta", json={"evento_id": "en-curso", "cantidad": 1}, headers=self.headers
+            )
+        self.assertEqual(reclaimed.status_code, 200)
+        self.assertEqual(reclaimed.json["status"], "ok")
+        self.assertEqual(busy.status_code, 503)
+        self.assertEqual(sender.call_count, 1)
+
+    def test_agent_discards_permanent_errors_and_caps_alert_retries(self):
+        import requests
+        from utils.agent_sync import AgentSync, MAX_ALERT_ATTEMPTS, queue_connection
+
+        agent = AgentSync("http://localhost", "key", "PC", Path(self.directory.name) / "caps")
+        agent.enqueue({"evento_id": "malo", "especie": "tortugas", "cantidad": 1})
+        bad = requests.HTTPError("400", response=SimpleNamespace(status_code=400))
+        agent.outgoing.post = MagicMock(side_effect=bad)
+        agent.flush_one()
+        with queue_connection(agent.database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM pendientes").fetchone()[0], 0)
+            connection.execute(
+                "INSERT INTO pendientes(id,payload,etapa,intentos) VALUES('agotada',?,'alerta',?)",
+                (json.dumps({"evento_id": "agotada"}), MAX_ALERT_ATTEMPTS),
+            )
+        agent.outgoing.post = MagicMock()
+        agent.flush_one()
+        agent.outgoing.post.assert_not_called()
+        with queue_connection(agent.database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM pendientes").fetchone()[0], 0)
+        agent.session.close()
+        agent.outgoing.close()
+
+    def test_agent_remembers_last_mode_after_restart(self):
+        from utils.agent_sync import AgentSync
+
+        directory = Path(self.directory.name) / "memoria"
+        first = AgentSync("http://localhost", "key", "Pi", directory)
+        first.session.get = lambda url, **kw: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"mode": "gaviotines", "ubicacion": None},
+        )
+        first.poll()
+        # Reinicio sin internet: nunca llega a consultar el servidor.
+        second = AgentSync("http://localhost", "key", "Pi", directory)
+        self.assertEqual(second.snapshot()["mode"], "gaviotines")
+        for agent in (first, second):
+            agent.session.close()
+            agent.outgoing.close()
+
+    def test_webhook_requires_valid_twilio_signature(self):
+        from twilio.request_validator import RequestValidator
+
+        data = {"Body": "menu", "From": "whatsapp:+51000000003"}
+        url = "https://ejemplo.up.railway.app/whatsapp"
+        with patch.object(self.module, "TWILIO_AUTH_TOKEN", "token-secreto"):
+            self.assertEqual(
+                self.client.post(
+                    "/whatsapp", data=data, base_url="https://ejemplo.up.railway.app"
+                ).status_code,
+                403,
+            )
+            signature = RequestValidator("token-secreto").compute_signature(url, data)
+            response = self.client.post(
+                "/whatsapp",
+                data=data,
+                base_url="https://ejemplo.up.railway.app",
+                headers={"X-Twilio-Signature": signature},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("ÑAWI APU", response.get_data(as_text=True))
+            # Detrás del proxy de Railway, Flask recibe http:// pero Twilio firmó https://.
+            proxied = self.client.post(
+                "/whatsapp",
+                data=data,
+                base_url="http://ejemplo.up.railway.app",
+                headers={"X-Twilio-Signature": signature, "X-Forwarded-Proto": "https"},
+            )
+            self.assertEqual(proxied.status_code, 200)
+
+    def test_only_authorized_numbers_use_bot_and_get_alerts(self):
+        authorized = {"whatsapp:+51000000004"}
+        with patch.object(self.module, "WHATSAPP_AUTORIZADOS", authorized):
+            response = self.client.post(
+                "/whatsapp", data={"Body": "4", "From": "whatsapp:+51999999999"}
+            )
+            self.assertIn("no está autorizado", response.get_data(as_text=True))
+            self.client.post("/whatsapp", data={"Body": "menu", "From": "whatsapp:+51000000004"})
+            users = json.loads(Path(self.module.USUARIOS_FILE).read_text())
+            self.assertEqual(list(users), ["whatsapp:+51000000004"])
+            # Un número antiguo que quedó registrado ya no recibe alertas.
+            users["whatsapp:+51888888888"] = {}
+            Path(self.module.USUARIOS_FILE).write_text(json.dumps(users))
+            with patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+                self.client.post(
+                    "/alerta", json={"evento_id": "solo-autorizados", "cantidad": 1}, headers=self.headers
+                )
+            sender.assert_called_once()
+            self.assertEqual(sender.call_args[0][0], "whatsapp:+51000000004")
+        self.assertEqual(self.module.normalizar_numero("+51 900 000 000"), "whatsapp:+51900000000")
+
+    def test_exact_coordinates_require_key(self):
+        nest = {"nombre": "Nido 1", "latitud": -12.163456, "longitud": -77.031234, "tipo": "nido"}
+        self.client.post("/api/ubicaciones", json=nest, headers=self.headers)
+        public = self.client.get("/api/ubicaciones").json["ubicaciones"][0]
+        self.assertEqual((public["latitud"], public["longitud"]), (-12.16, -77.03))
+        private = self.client.get("/api/ubicaciones", headers=self.headers).json["ubicaciones"][0]
+        self.assertEqual(private["latitud"], -12.163456)
+        summary = self.client.get("/api/resumen").json
+        self.assertFalse(summary["coordenadas_exactas"])
+        self.assertEqual(summary["ubicaciones"][0]["longitud"], -77.03)
+        self.assertTrue(self.client.get("/api/resumen", headers=self.headers).json["coordenadas_exactas"])
 
 
 if __name__ == "__main__":

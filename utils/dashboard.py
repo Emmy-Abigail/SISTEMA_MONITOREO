@@ -80,7 +80,16 @@ def initialize(app):
                 evento_id TEXT NOT NULL, destinatario TEXT NOT NULL,
                 PRIMARY KEY(evento_id,destinatario)
             );
+            CREATE TABLE IF NOT EXISTS alert_rejections (
+                evento_id TEXT NOT NULL, destinatario TEXT NOT NULL,
+                PRIMARY KEY(evento_id,destinatario)
+            );
         """)
+        run_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(alert_runs)")
+        }
+        if "fecha" not in run_columns:
+            connection.execute("ALTER TABLE alert_runs ADD COLUMN fecha TEXT")
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(detecciones)")
         }
@@ -141,6 +150,37 @@ def prototype():
             "SELECT * FROM ubicaciones WHERE id='prototipo'"
         ).fetchone()
     return dict(row) if row else None
+
+
+def has_key():
+    """True si la petición trae la ALERTA_KEY correcta (o si el servidor no usa clave)."""
+    key = current_app.config.get("ALERTA_KEY")
+    if not key:
+        return True
+    supplied = request.headers.get("X-ALERTA-KEY", "")
+    return hmac.compare_digest(supplied.encode(), key.encode())
+
+
+# 2 decimales ≈ 1,1 km: suficiente para el mapa público, inútil para encontrar un nido.
+PUBLIC_DECIMALS = 2
+
+
+def public_location(row):
+    """Redondea las coordenadas de un registro si quien consulta no tiene la clave.
+
+    Protege la ubicación exacta de los nidos frente a saqueos: sin ALERTA_KEY
+    solo se ve la zona aproximada; con la clave, las coordenadas exactas."""
+    if row is None or has_key():
+        return row
+    row = dict(row)
+    for field in ("latitud", "longitud"):
+        if isinstance(row.get(field), (int, float)):
+            row[field] = round(row[field], PUBLIC_DECIMALS)
+    return row
+
+
+def public_rows(rows):
+    return [public_location(dict(row)) for row in rows]
 
 
 def authorize():
@@ -338,7 +378,7 @@ def locations():
         rows = connection.execute(
             "SELECT * FROM ubicaciones ORDER BY tipo,nombre"
         ).fetchall()
-    return jsonify(ubicaciones=[dict(row) for row in rows])
+    return jsonify(ubicaciones=public_rows(rows))
 
 
 @dashboard.post("/api/ubicaciones")
@@ -409,7 +449,7 @@ def event_detail(event_id):
         ).fetchone()
     if not row:
         abort(404, description="El evento no existe.")
-    return jsonify(dict(row))
+    return jsonify(public_location(dict(row)))
 
 
 @dashboard.post("/api/dispositivo")
@@ -536,16 +576,17 @@ def summary():
     response = jsonify(
         kpis=kpis,
         totales=[dict(row) for row in totals],
-        eventos=[dict(row) for row in events],
+        eventos=public_rows(events),
         serie=list(timeline.values()),
-        amenazas=[dict(row) for row in threats],
-        puntos=[dict(row) for row in points],
-        ubicaciones=[dict(row) for row in location_rows],
+        amenazas=public_rows(threats),
+        puntos=public_rows(points),
+        ubicaciones=public_rows(location_rows),
         dispositivo=device_data,
         actualizado=now(),
         desde=start.isoformat(),
         hasta=end.isoformat(),
         clave_requerida=bool(current_app.config.get("ALERTA_KEY")),
+        coordenadas_exactas=has_key(),
         almacenamiento_persistente=bool(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"))
         or not bool(os.environ.get("RAILWAY_ENVIRONMENT_ID")),
     )
@@ -586,7 +627,7 @@ def list_events():
             [*params, size, (page - 1) * size],
         ).fetchall()
     return jsonify(
-        eventos=[dict(row) for row in rows],
+        eventos=public_rows(rows),
         total=count,
         pagina=page,
         paginas=max(1, math.ceil(count / size)),
@@ -595,6 +636,8 @@ def list_events():
 
 @dashboard.get("/api/exportar")
 def export_events():
+    # El CSV trae coordenadas exactas de todo el historial: solo con clave.
+    authorize()
     conditions, params, _, _ = filters()
     with connect() as connection:
         rows = connection.execute(
@@ -651,7 +694,7 @@ def export_events():
         io.BytesIO(output.getvalue().encode("utf-8-sig")),
         mimetype="text/csv",
         as_attachment=True,
-        download_name="nawi-apu-gogo-detecciones.csv",
+        download_name="nawi-apu-detecciones.csv",
     )
 
 
