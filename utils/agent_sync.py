@@ -134,7 +134,8 @@ class AgentSync:
         with queue_connection(self.database, timeout=5) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
-                "SELECT * FROM pendientes WHERE reintento<=? ORDER BY rowid LIMIT 1",
+                "SELECT * FROM pendientes WHERE reintento<=? "
+                "ORDER BY CASE WHEN etapa='deteccion' THEN 0 ELSE 1 END,rowid LIMIT 1",
                 (time.time(),),
             ).fetchone()
         if row is None:
@@ -160,7 +161,10 @@ class AgentSync:
                         "UPDATE pendientes SET etapa='alerta',intentos=0,reintento=0 WHERE id=?",
                         (row["id"],),
                     )
-                stage, previous_attempts = "alerta", 0
+                # Primero vaciar las detecciones: WhatsApp puede tardar hasta 45 s
+                # y no debe retrasar la llegada de los siguientes datos al panel.
+                if self.whatsapp:
+                    return
             if self.whatsapp:
                 alert = {key: value for key, value in event.items() if key != "captura"}
                 if event.get("captura") and self.url.startswith("https://"):

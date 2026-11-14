@@ -69,6 +69,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("ÑAWI APU", response.get_data(as_text=True))
         response = self.client.post("/whatsapp", data={"Body": "menu"})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/xml")
         self.assertIn("tortugas", response.get_data(as_text=True).lower())
         self.assertIn("ÑAWI APU", response.get_data(as_text=True))
         self.assertEqual(self.client.get("/config").json["mode"], "detenido")
@@ -176,7 +177,8 @@ class DashboardTests(unittest.TestCase):
             json={"evento_id": "legacy", "especie": "tortugas", "cantidad": 2},
             headers=self.headers,
         )
-        self.assertEqual(response.json["status"], "ok")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json["status"], "pendiente")
         self.assertEqual(response.json["enviados"], 0)
         self.assertEqual(
             self.client.get("/api/resumen").json["totales"][0]["cantidad"], 2
@@ -188,6 +190,14 @@ class DashboardTests(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(len(self.client.get("/api/resumen").json["eventos"]), 1)
+        self.client.post("/whatsapp", data={"Body": "menu", "From": "whatsapp:+51000000009"})
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            response = self.client.post(
+                "/alerta", json={"evento_id": "legacy", "especie": "tortugas", "cantidad": 2},
+                headers=self.headers,
+            )
+        self.assertEqual(response.json["enviados"], 1)
+        sender.assert_called_once()
 
     def test_secrets_and_phone_numbers_are_not_exposed(self):
         response = self.client.get("/api/resumen")
@@ -446,6 +456,7 @@ class DashboardTests(unittest.TestCase):
                 agent.poll()
             elif snapshots == 2:
                 agent.flush_one()
+                agent.flush_one()
                 self.client.post(
                     "/whatsapp", data={"Body": "3", "From": "whatsapp:+51000000009"}
                 )
@@ -691,6 +702,32 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM pendientes").fetchone()[0], 0)
         agent.session.close()
         agent.outgoing.close()
+
+    def test_agent_uploads_detections_before_waiting_for_alerts(self):
+        from utils.agent_sync import AgentSync, queue_connection
+
+        agent = AgentSync("http://localhost", "key", "PC", Path(self.directory.name) / "priority")
+        agent.outgoing.post = MagicMock(return_value=SimpleNamespace(
+            raise_for_status=lambda: None, json=lambda: {"status": "ok", "enviados": 1}
+        ))
+        try:
+            for event_id in ("first", "second"):
+                agent.enqueue({"evento_id": event_id, "especie": "tortugas", "cantidad": 1})
+            agent.flush_one()
+            agent.flush_one()
+            self.assertEqual(
+                [call.args[0] for call in agent.outgoing.post.call_args_list],
+                ["http://localhost/api/detecciones"] * 2,
+            )
+            with queue_connection(agent.database) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM pendientes WHERE etapa='alerta'"
+                ).fetchone()[0], 2)
+            agent.flush_one()
+            self.assertEqual(agent.outgoing.post.call_args.args[0], "http://localhost/alerta")
+        finally:
+            agent.session.close()
+            agent.outgoing.close()
 
     def test_agent_remembers_last_mode_after_restart(self):
         from utils.agent_sync import AgentSync

@@ -4,7 +4,7 @@ import time
 import shutil
 import tempfile
 import threading
-from flask import Flask, request, jsonify, abort
+from flask import Flask, Response, request, jsonify, abort
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from twilio.request_validator import RequestValidator
@@ -406,7 +406,7 @@ def whatsapp_reply():
     if not numero_autorizado(from_number):
         app.logger.warning(f"🔒 Número no autorizado: {from_number}")
         msg.body("🔒 Este número no está registrado en *ÑAWI APU*.\n_Contacte al coordinador del proyecto._")
-        return str(resp)
+        return Response(str(resp), mimetype="application/xml")
 
     usuarios = cargar_json(USUARIOS_FILE)
     estados = cargar_json(ESTADOS_FILE)
@@ -420,7 +420,7 @@ def whatsapp_reply():
         guardar_json(USUARIOS_FILE, usuarios)
     def responder(cuerpo):
         msg.body(cuerpo)
-        return str(resp)
+        return Response(str(resp), mimetype="application/xml")
 
     if texto in PALABRAS_MENU or texto.startswith("join "):
         return responder(generar_menu_principal())
@@ -581,6 +581,16 @@ def recibir_alerta():
 
     # Solo se alerta a encargados autorizados (si hay lista); los números antiguos se ignoran.
     usuarios = {numero: datos for numero, datos in cargar_json(USUARIOS_FILE).items() if numero_autorizado(numero)}
+    if not usuarios:
+        app.logger.warning("Alerta pendiente: no hay destinatarios registrados y autorizados")
+        if event_id:
+            with connect() as connection:
+                connection.execute(
+                    "UPDATE alert_runs SET estado='pendiente',enviados=0 WHERE evento_id=?",
+                    (str(event_id),),
+                )
+        return jsonify(status="pendiente", enviados=0, fallidos=0, rechazados=0,
+                       error="No hay destinatarios registrados y autorizados. Escribe al bot desde un número autorizado."), 503
     texto = generar_alerta(data, titulo=data.get("mensaje_prefix"))
 
     enviados = 0
