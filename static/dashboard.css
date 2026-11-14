@@ -159,8 +159,28 @@ select:focus-visible {
   margin-top: 5px;
 }
 .brand-icon {
-  font-size: 29px;
-  color: var(--accent);
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #f4fbf9;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 2px #2de0d255;
+}
+.brand-icon img {
+  width: 38px;
+  height: 38px;
+}
+.brand > span:last-child {
+  white-space: normal;
+}
+.brand b {
+  font-size: 14px !important;
+}
+.brand small {
+  line-height: 1.3;
+  max-width: 120px;
 }
 .sidebar nav {
   display: grid;
@@ -190,11 +210,28 @@ select:focus-visible {
   background: #ffffff08;
   color: #fff;
 }
+/* Opción activa: texto blanco en negrita, barra lateral y fondo claro translúcido.
+   Se distingue sin depender solo del color turquesa (que se confundía con el tema). */
 .sidebar nav a.selected {
+  position: relative;
   color: #fff;
-  background: linear-gradient(90deg, #007a8e9c, #07536d77);
-  border-color: #1a8396;
-  box-shadow: inset 0 0 20px #12b9d310;
+  font-weight: 700;
+  background: #ffffff1c;
+  border-color: #ffffff38;
+  box-shadow: inset 0 0 0 1px #ffffff0d;
+}
+.sidebar nav a.selected::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: #fff;
+}
+.sidebar nav a.selected .bi {
+  color: #fff;
 }
 .nav-count {
   margin-left: auto;
@@ -796,6 +833,36 @@ html[data-theme="reserva"] .panel {
 .leaflet-container {
   background: #092535;
   font-family: Inter, sans-serif;
+}
+/* OpenStreetMap es claro: se oscurece para que combine con el tema del panel. */
+.map-tiles-dark {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9)
+    saturate(0.6);
+}
+.leaflet-control-layers {
+  background: #0e3347 !important;
+  color: #d2f2ff !important;
+  border: 1px solid #365b6d !important;
+  border-radius: 8px !important;
+  font-size: 10px;
+  padding: 3px 8px 3px 5px !important;
+  line-height: 1.2;
+}
+.leaflet-control-layers-base label {
+  display: block;
+  margin: 0;
+  cursor: pointer;
+}
+.leaflet-control-layers-base label span {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.leaflet-control-layers-selector {
+  margin: 2px 3px !important;
+}
+.leaflet-control-layers input {
+  accent-color: var(--accent);
 }
 .leaflet-control-attribution {
   font-size: 8px !important;
@@ -2121,3 +2188,509 @@ legend {
     font-size: 9px;
   }
 }
+
+/* ---- Detección en vivo ---- */
+.spotlight {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1000;
+  width: min(340px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  border-radius: var(--radius);
+  background: var(--panel-top);
+  box-shadow:
+    0 18px 50px #000a,
+    0 0 0 4px rgba(var(--accent-rgb), 0.12);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(24px) scale(0.97);
+  pointer-events: none;
+  transition:
+    opacity 0.35s ease,
+    transform 0.35s ease;
+}
+.spotlight.visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.spotlight.threat {
+  border-color: #ff9485aa;
+  box-shadow:
+    0 18px 50px #000a,
+    0 0 0 4px #ff948522;
+}
+.spotlight-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.spotlight-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.spotlight.threat .spotlight-live {
+  color: var(--coral);
+}
+.spotlight-live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: spotlight-pulse 1.2s ease-in-out infinite;
+}
+@keyframes spotlight-pulse {
+  50% {
+    opacity: 0.25;
+    transform: scale(0.7);
+  }
+}
+.spotlight-close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.spotlight img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: calc(var(--radius) - 4px);
+  margin-bottom: 9px;
+  background: #0006;
+}
+.spotlight strong {
+  display: block;
+  font-size: 15px;
+}
+.spotlight p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.spotlight .spotlight-type {
+  color: var(--coral);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spotlight,
+  .spotlight-live::before {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Celular: no hay espacio para el minigráfico sin tapar el texto; basta la variación en %. */
+@media (max-width: 720px) {
+  .sparkline {
+    display: none !important;
+  }
+  .kpi-card p {
+    font-size: 9px;
+  }
+}
+
+/* Al elegir una opción del menú, el panel de destino se resalta un momento
+   para que quede claro cuál es el recuadro correcto. */
+.section-focus {
+  animation: section-focus 1.6s ease-out;
+}
+@keyframes section-focus {
+  0%,
+  35% {
+    box-shadow:
+      0 0 0 3px #ffffffcc,
+      0 0 26px #ffffff55;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .section-focus {
+    animation: none;
+    outline: 3px solid #fff;
+  }
+}
+
+/* =====================================================================
+   Rediseño centrado en el guardián (UX):
+   estado y control arriba · qué revisar · foto · mapa con evidencia
+   ===================================================================== */
+
+/* ---- Legibilidad: nada por debajo de ~10 px (celular al sol, proyector) ---- */
+.panel-title h2 { font-size: 13px; }
+.panel-title small { font-size: 10px; }
+.badge { font-size: 10px; padding: 3px 8px; }
+.chart-legend button { font-size: 10px; }
+.record-filters select { font-size: 11px; }
+.kpi-card h2, .kpi-label { font-size: 11px; }
+.kpi-card p, .kpi-note { font-size: 10px; }
+.map-footer { font-size: 10px; }
+.status-pill { font-size: 11px; }
+.monitor-status small { font-size: 10px; }
+#event-detail { font-size: 12px; }
+#event-detail span { font-size: 10px; }
+
+.topbar-spacer { flex: 1; }
+
+/* ---- Cabecera: identidad + estación ---- */
+.heading-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.heading-logo {
+  width: 58px;
+  height: 58px;
+  padding: 4px;
+  border-radius: 50%;
+  background: #f4fbf9;
+  box-shadow: 0 0 0 3px #2de0d244, 0 8px 24px #0006;
+  flex-shrink: 0;
+}
+.heading-brand h1 {
+  font-size: 28px;
+  letter-spacing: 0.5px;
+  font-weight: 800;
+}
+.heading-brand p {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b8d1de;
+}
+.station-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- Control de la cámara (segmentado) ---- */
+.mode-switch {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #06202ecc;
+}
+.mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #bdd3de;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mode-switch button:hover { background: #ffffff10; color: #fff; }
+.mode-switch button.active {
+  background: #fff;
+  color: #052230;
+  font-weight: 700;
+  box-shadow: 0 2px 10px #0005;
+}
+.mode-switch button[data-mode="invasores"].active { background: #ffd9d3; }
+.mode-switch button[data-mode="detenido"].active { background: #e8eef2; color: #39505c; }
+
+/* ---- KPI "Por revisar": es un botón (lleva a la lista) ---- */
+.pending-kpi {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  align-items: flex-start;
+}
+.pending-kpi .kpi-body { display: block; }
+.pending-kpi .kpi-label { display: block; color: #e0f0f6; font-weight: 500; }
+.pending-kpi .kpi-note { display: block; color: #9bb7c6; margin-top: 5px; }
+.pending-kpi .kpi-go {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 18px;
+  color: var(--muted);
+  transition: transform 0.2s;
+}
+.pending-kpi:hover .kpi-go { transform: translate(4px, -50%); color: #fff; }
+.pending-kpi.has-pending { border-color: #e8bc7099; }
+.pending-kpi.has-pending .kpi-icon { color: var(--amber); background: #e8bc7022; }
+.pending-kpi.has-pending .kpi-note { color: var(--amber); }
+
+/* ---- Distribución central: mapa grande + foto + amenazas; gráfico debajo ---- */
+.analysis-grid.v2 {
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  grid-template-rows: 262px 190px auto;
+  grid-template-areas:
+    "map latest"
+    "map threats"
+    "chart chart";
+}
+.analysis-grid.v2 > .map-panel { grid-area: map; }
+.analysis-grid.v2 > .latest-panel { grid-area: latest; }
+.analysis-grid.v2 > .threat-panel { grid-area: threats; }
+.analysis-grid.v2 > .chart-panel { grid-area: chart; }
+.analysis-grid.v2 .timeline-wrap { height: 170px; }
+@media (max-width: 960px) {
+  .analysis-grid.v2 {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 360px auto auto;
+    grid-template-areas: "latest" "map" "threats" "chart";
+  }
+  .station-card { justify-content: flex-start; }
+  .page-heading { flex-wrap: wrap; }
+}
+
+/* ---- Última detección ---- */
+.latest-panel { display: flex; flex-direction: column; }
+.latest-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 0 14px 14px;
+  min-height: 0;
+}
+.latest-body > .panel-empty { grid-column: 1 / -1; }
+.latest-photo {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #0006;
+  cursor: zoom-in;
+  min-height: 0;
+}
+.latest-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.latest-photo.empty { display: grid; place-items: center; color: var(--muted); font-size: 28px; cursor: pointer; }
+.latest-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.latest-info strong { font-size: 15px; line-height: 1.25; }
+.latest-count { font-size: 22px; font-weight: 800; color: var(--accent); }
+.latest-meta { font-size: 11px; color: var(--muted); }
+.latest-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+@media (max-width: 960px) {
+  .latest-body { grid-template-columns: 1fr; }
+  .latest-photo { aspect-ratio: 4 / 3; }
+}
+
+/* ---- Botones de validación ---- */
+.button.small { min-height: 30px; padding: 6px 10px; font-size: 11px; }
+.button.danger { background: transparent; border-color: #ff948588; color: var(--coral); }
+.button.danger:hover { background: #ff94851a; }
+.button:disabled { opacity: 0.45; cursor: default; }
+.icon-button.review.primary { color: var(--accent); border-color: #2de0d255; }
+.icon-button.review.primary:hover { background: #2de0d222; }
+.icon-button.review.danger { color: var(--coral); border-color: #ff948555; }
+.icon-button.review.danger:hover { background: #ff948522; }
+
+/* ---- Tabla: foto y pendientes destacados ---- */
+.photo-cell { width: 70px; }
+.thumb {
+  width: 60px;
+  height: 45px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0005;
+  cursor: zoom-in;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb.empty { cursor: pointer; }
+tr.pending-row td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+.actions-cell { white-space: nowrap; text-align: right; }
+.actions-cell .icon-button { margin-left: 4px; }
+.badge.nuevo, .badge.en_revision { color: #f0c879; border-color: #aa854c66; background: #ac7e2817; }
+.badge.descartado { color: #9fb1bd; border-color: #58738466; background: transparent; text-decoration: line-through; }
+
+/* ---- Filtro de revisión (chips) ---- */
+.state-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.state-chips button {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: transparent;
+  color: #bdd3de;
+  font-size: 11px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.state-chips button[aria-pressed="true"] { background: #fff; color: #052230; border-color: #fff; font-weight: 700; }
+.chip-count { font-weight: 800; color: var(--amber); }
+.state-chips button[aria-pressed="true"] .chip-count { color: #a05a00; }
+.record-filters { flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+
+/* ---- Detalle del evento ---- */
+.event-question { margin: 16px 0 8px; font-size: 13px; font-weight: 600; }
+.event-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.event-actions .button { flex: 1 1 140px; min-height: 40px; font-size: 13px; }
+
+/* ---- Mapa: fichas con foto ---- */
+.map-card { display: grid; gap: 3px; width: 220px; }
+.map-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; margin-bottom: 3px; }
+.map-card strong { font-size: 13px; color: #fff; }
+.map-card span, .map-card small { font-size: 11px; color: #b5cfdb; white-space: normal; }
+.map-card small { color: var(--accent); margin-top: 2px; }
+.map-card.compact { width: auto; grid-template-columns: 64px 1fr; column-gap: 9px; align-items: center; }
+.map-card.compact img { grid-row: 1 / 3; width: 64px; margin: 0; }
+.map-card.compact:not(:has(img)) { grid-template-columns: 1fr; }
+.leaflet-tooltip.map-tooltip {
+  background: #0d3043;
+  border: 1px solid #3f7e90;
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 10px 30px #000a;
+  color: var(--text);
+}
+.leaflet-tooltip.map-tooltip::before { border-top-color: #3f7e90; }
+.map-popup-list { display: grid; gap: 6px; }
+.map-popup-heading { font-size: 12px; margin-bottom: 2px; }
+.map-popup-row {
+  padding: 6px;
+  border: 1px solid #2c5a6a;
+  border-radius: 8px;
+  background: #0a2a3a;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.map-popup-row:hover { border-color: var(--accent); }
+.precision-label { color: var(--amber) !important; cursor: help; }
+
+
+/* ---- Celular ---- */
+@media (max-width: 720px) {
+  .heading-logo { width: 46px; height: 46px; }
+  .heading-brand h1 { font-size: 22px; }
+  .mode-switch { width: 100%; }
+  .mode-switch button { flex: 1; justify-content: center; padding: 9px 4px; font-size: 11px; flex-direction: column; gap: 2px; }
+  .station-card { width: 100%; }
+  .records-heading { flex-wrap: wrap; }
+  .record-filters { justify-content: flex-start; }
+}
+
+/* Estación con detecciones: rombo + contador */
+.station-marker { position: relative; width: 26px; height: 26px; display: grid; place-items: center; }
+.station-marker .map-marker.prototipo { width: 22px; height: 22px; }
+.station-count {
+  position: absolute;
+  top: -11px;
+  right: -14px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: #fff;
+  color: #052230;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 8px #0008;
+}
+.station-marker.threat .station-count { background: var(--coral); color: #2a0b06; }
+.leaflet-popup-scrolled { border: 0 !important; padding-right: 4px; }
+@media (max-width: 720px) {
+  .map-footer { flex-wrap: wrap; row-gap: 4px; }
+  .map-footer > span#location-label { max-width: 100%; flex-basis: 100%; }
+}
+
+/* En laptop el logo y el nombre ya están en el menú lateral: la cabecera muestra la estación.
+   En el celular el menú se oculta, así que ahí sí aparece el logo arriba. */
+@media (min-width: 721px) {
+  .heading-logo { display: none; }
+
+}
+
+.latest-hint { flex-basis: 100%; font-size: 10px; color: var(--muted); }
+.gps-button { border-color: var(--accent); color: var(--accent); font-weight: 700; min-height: 40px; }
+.gps-button:hover { background: #2de0d21a; }
+
+/* Indicador (solo lectura) de qué vigila la cámara; se controla por WhatsApp. */
+.heading-brand h1 { font-size: 24px; letter-spacing: -0.4px; font-weight: 700; }
+.mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: #06202ecc;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e7f4fa;
+  cursor: help;
+}
+.mode-indicator.invasores { border-color: #ff948588; color: var(--coral); }
+.mode-indicator.detenido { color: var(--muted); }
+@media (max-width: 720px) {
+  .heading-brand h1 { font-size: 19px; }
+}
+
+/* Veredicto de Gemini */
+.ia-note { display: block; font-style: normal; font-size: 11px; line-height: 1.4; color: #c9e7f2; background: #2de0d214; border-left: 2px solid var(--accent); padding: 4px 7px; border-radius: 4px; margin-top: 4px; }
+.ia-ok { display: block; color: var(--accent); font-size: 10px; margin-top: 2px; }
+#event-detail div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.badge.descartado.ia { text-decoration: none; color: #c9d7df; border-color: #7f97a6; }
+
+/* Amenaza reciente visible aunque la última detección sea de fauna */
+.threat-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid #ff9485aa;
+  border-radius: 8px;
+  background: #ff948522;
+  color: #ffd3cc;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  animation: spotlight-pulse-border 1.6s ease-in-out 3;
+}
+.threat-strip .bi { color: var(--coral); }
+@keyframes spotlight-pulse-border { 50% { background: #ff948544; } }
+.latest-body { grid-template-rows: minmax(0, 1fr) auto; }
+
+/* Amenazas: hora relativa y enlace al registro completo */
+.threat-row > button { min-width: 0; }
+.threat-when { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.threat-more { display: block; margin: 6px 0 10px; font-size: 11px; color: var(--accent); }
+.analysis-grid.v2 > .threat-panel { display: flex; flex-direction: column; }
+.analysis-grid.v2 .threat-list { overflow: hidden; }
+.analysis-grid.v2 { grid-template-rows: 250px 228px auto; }
+.analysis-grid.v2 .threat-list { padding-bottom: 4px; }
+.threat-row { min-height: 34px; }
+@media (max-width: 960px) {
+  .analysis-grid.v2 { grid-template-rows: auto 360px auto auto; }
+}
+.analysis-grid.v2 .threat-list { max-height: none; flex: 1; overflow: hidden; align-content: start; }
+.threat-row, .threat-row > button { font-size: 12px; }
+.threat-row > button span { max-width: 220px; }

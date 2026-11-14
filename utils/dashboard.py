@@ -26,7 +26,13 @@ from werkzeug.exceptions import HTTPException
 
 dashboard = Blueprint("dashboard", __name__)
 MODES = {"tortugas", "gaviotines", "invasores", "detenido"}
-STATES = {"nuevo", "confirmado", "en_revision", "resuelto"}
+# "descartado" = falso positivo marcado por el guardián: no cuenta en métricas ni mapa.
+STATES = {"nuevo", "confirmado", "en_revision", "resuelto", "descartado"}
+# Grupos que entiende el guardián: lo que falta revisar y lo ya validado.
+STATE_GROUPS = {
+    "pendiente": ("nuevo", "en_revision"),
+    "validado": ("confirmado", "resuelto"),
+}
 SEVERITIES = {"informativa", "advertencia", "alta", "critica"}
 
 
@@ -80,6 +86,10 @@ def initialize(app):
                 evento_id TEXT NOT NULL, destinatario TEXT NOT NULL,
                 PRIMARY KEY(evento_id,destinatario)
             );
+            -- Cada WhatsApp enviado: permite saber a qué alerta responde el guardián.
+            CREATE TABLE IF NOT EXISTS alert_messages (
+                sid TEXT PRIMARY KEY, evento_id TEXT NOT NULL, destinatario TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS alert_rejections (
                 evento_id TEXT NOT NULL, destinatario TEXT NOT NULL,
                 PRIMARY KEY(evento_id,destinatario)
@@ -100,6 +110,12 @@ def initialize(app):
             "tipo_evento": "TEXT NOT NULL DEFAULT 'deteccion'",
             "severidad": "TEXT NOT NULL DEFAULT 'informativa'",
             "estado": "TEXT NOT NULL DEFAULT 'nuevo'",
+            # Verificación con Gemini: coincide / no_coincide / error.
+            "ia_resultado": "TEXT",
+            "ia_descripcion": "TEXT",
+            "ia_clase": "TEXT",
+            # Quién marcó el falso positivo: "ia" (Gemini) o "guardian" (respuesta NO en WhatsApp).
+            "descartado_por": "TEXT",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -315,7 +331,7 @@ def filters():
     if (
         hours not in {"1", "24", "168", "720"}
         or species not in {"todas", "tortugas", "gaviotines", "invasores"}
-        or state not in STATES | {"todos"}
+        or state not in STATES | STATE_GROUPS.keys() | {"todos"}
     ):
         abort(400, description="Filtro inválido.")
     try:
@@ -338,7 +354,14 @@ def filters():
     if species != "todas":
         conditions.append("especie = ?")
         params.append(species)
-    if state != "todos":
+    if state == "todos":
+        # "Todos" muestra los eventos válidos: los falsos positivos solo se ven si se piden.
+        conditions.append("estado != 'descartado'")
+    elif state in STATE_GROUPS:
+        group = STATE_GROUPS[state]
+        conditions.append("estado IN (" + ",".join("?" * len(group)) + ")")
+        params.extend(group)
+    else:
         conditions.append("estado = ?")
         params.append(state)
     search = request.args.get("buscar", "").strip()[:150]
@@ -352,7 +375,8 @@ def filters():
 
 EVENT_COLUMNS = (
     "id,fecha,especie,cantidad,confianza,dispositivo,imagen IS NOT NULL tiene_imagen,"
-    "imagen_url,ubicacion,latitud,longitud,tipo_evento,severidad,estado"
+    "imagen_url,ubicacion,latitud,longitud,tipo_evento,severidad,estado,"
+    "ia_resultado,ia_descripcion,ia_clase,descartado_por"
 )
 
 
@@ -420,9 +444,15 @@ def receive_detection():
     if not isinstance(data, dict):
         return jsonify(error="Envía un objeto JSON."), 400
     try:
-        event_id, created = save_detection(data, decode_image(data.get("captura")))
+        image = decode_image(data.get("captura"))
+        event_id, created = save_detection(data, image)
     except ValueError as error:
         return jsonify(error=str(error)), 400
+    if created and image:
+        # Segunda opinión de Gemini en segundo plano (no retrasa al agente de cámara).
+        from utils import verificacion
+
+        verificacion.iniciar(current_app._get_current_object(), event_id)
     return jsonify(evento_id=event_id, creado=created), 201 if created else 200
 
 
@@ -524,11 +554,17 @@ def summary():
             params,
         ).fetchall()
         points = connection.execute(
-            "SELECT id,especie,cantidad,latitud,longitud,ubicacion,fecha,severidad FROM detecciones WHERE "
+            "SELECT id,especie,cantidad,confianza,latitud,longitud,ubicacion,fecha,severidad,estado,"
+            "tipo_evento,imagen IS NOT NULL tiene_imagen,ia_resultado,ia_descripcion,ia_clase,descartado_por "
+            "FROM detecciones WHERE "
             + conditions
             + " AND latitud IS NOT NULL ORDER BY fecha DESC LIMIT 500",
             params,
         ).fetchall()
+        # Pendientes de revisión de todo el historial: es la "bandeja de entrada" del guardián.
+        pending = connection.execute(
+            "SELECT COUNT(*) FROM detecciones WHERE estado IN ('nuevo','en_revision')"
+        ).fetchone()[0]
         device = connection.execute(
             "SELECT nombre,estado,fecha FROM dispositivo WHERE id=1"
         ).fetchone()
@@ -582,6 +618,7 @@ def summary():
         puntos=public_rows(points),
         ubicaciones=public_rows(location_rows),
         dispositivo=device_data,
+        pendientes=pending,
         actualizado=now(),
         desde=start.isoformat(),
         hasta=end.isoformat(),
@@ -638,7 +675,7 @@ def list_events():
 def export_events():
     # El CSV trae coordenadas exactas de todo el historial: solo con clave.
     authorize()
-    conditions, params, _, _ = filters()
+    conditions, params, _start, _end = filters()
     with connect() as connection:
         rows = connection.execute(
             "SELECT "
@@ -648,53 +685,52 @@ def export_events():
             + " ORDER BY fecha DESC",
             params,
         ).fetchall()
+    # Reporte legible para autoridades: hora de Perú, textos en español y
+    # la verificación (IA y guardián) de cada detección.
+    peru = timezone(timedelta(hours=-5))
+    species_names = {"tortugas": "Tortuga marina", "gaviotines": "Gaviotín peruano", "invasores": "Amenaza"}
+    ia_names = {"coincide": "Confirmada", "no_coincide": "No coincide", "error": "Sin verificar"}
+
+    def status(row):
+        if row["estado"] == "descartado":
+            return "Falsa alarma (revisada por el guardián)" if row["descartado_por"] == "guardian" else (
+                "Falsa alarma (descartada por IA)" if row["descartado_por"] == "ia" else "Falsa alarma")
+        return "Atendida" if row["estado"] == "resuelto" else "Válida"
+
+    def safe(value):
+        # Evita que Excel interprete textos como fórmulas.
+        return "'" + value if isinstance(value, str) and value.startswith(("=", "+", "-", "@")) else value
+
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(
-        [
-            "Fecha UTC",
-            "Especie",
-            "Cantidad",
-            "Ubicación",
-            "Latitud",
-            "Longitud",
-            "Tipo de evento",
-            "Confianza",
-            "Estado",
-            "Severidad",
-        ]
-    )
+    writer.writerow([
+        "Fecha (Perú)", "Hora (Perú)", "Detección", "Detalle", "Cantidad", "Confianza del modelo (%)",
+        "Verificación IA", "Descripción IA", "Estado", "Lugar", "Latitud", "Longitud", "Dispositivo",
+    ])
     for row in rows:
-        values = [
-            row[key]
-            for key in (
-                "fecha",
-                "especie",
-                "cantidad",
-                "ubicacion",
-                "latitud",
-                "longitud",
-                "tipo_evento",
-                "confianza",
-                "estado",
-                "severidad",
-            )
-        ]
-        writer.writerow(
-            [
-                (
-                    "'" + value
-                    if isinstance(value, str) and value.startswith(("=", "+", "-", "@"))
-                    else value
-                )
-                for value in values
-            ]
-        )
+        local = parse_date(row["fecha"]).astimezone(peru)
+        detail = row["tipo_evento"] if row["especie"] == "invasores" else ""
+        writer.writerow([safe(value) for value in (
+            local.strftime("%d/%m/%Y"),
+            local.strftime("%H:%M:%S"),
+            species_names.get(row["especie"], row["especie"]),
+            detail,
+            row["cantidad"],
+            round(row["confianza"] * 100) if row["confianza"] is not None else "",
+            ia_names.get(row["ia_resultado"], ""),
+            row["ia_descripcion"] or "",
+            status(row),
+            row["ubicacion"] or "",
+            row["latitud"] if row["latitud"] is not None else "",
+            row["longitud"] if row["longitud"] is not None else "",
+            row["dispositivo"],
+        )])
+    period = f"{_start.astimezone(peru):%Y-%m-%d}_a_{_end.astimezone(peru):%Y-%m-%d}"
     return send_file(
         io.BytesIO(output.getvalue().encode("utf-8-sig")),
         mimetype="text/csv",
         as_attachment=True,
-        download_name="nawi-apu-detecciones.csv",
+        download_name=f"nawi-apu-reporte_{period}.csv",
     )
 
 
