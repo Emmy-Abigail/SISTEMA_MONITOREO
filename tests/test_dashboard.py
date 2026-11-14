@@ -952,6 +952,23 @@ class DashboardTests(unittest.TestCase):
         # "Solo intrusos" ya no es una opción: los intrusos se vigilan con 1 y 2.
         self.assertIn("Opción no reconocida", reply("intrusos"))
 
+    def test_whatsapp_text_preserves_dashboard_image(self):
+        Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000021": {}}))
+        image = b"\xff\xd8\xffdashboard-evidence\xff\xd9"
+        event = {"evento_id": "text-only", "especie": "invasores", "cantidad": 2,
+                 "tipo_evento": "Intrusión: persona", "captura": base64.b64encode(image).decode()}
+        self.client.post("/api/detecciones", headers=self.headers, json=event)
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok") as sender:
+            response = self.client.post("/alerta", headers=self.headers, json={
+                **{k: v for k, v in event.items() if k != "captura"},
+                "imagen": "https://example.com/evidence.jpg",
+            })
+        self.assertEqual(response.json["enviados"], 1)
+        self.assertIsNone(sender.call_args.kwargs["media_url"])
+        self.assertIn("persona", sender.call_args.args[1])
+        self.assertIn("*Cantidad:* 2", sender.call_args.args[1])
+        self.assertEqual(self.client.get("/api/detecciones/text-only/imagen").data, image)
+
     def test_alerts_use_whatsapp_template_when_configured(self):
         Path(self.module.USUARIOS_FILE).write_text(json.dumps({"whatsapp:+51000000021": {}}))
         sent = []

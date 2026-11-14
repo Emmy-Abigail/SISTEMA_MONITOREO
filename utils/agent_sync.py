@@ -166,11 +166,8 @@ class AgentSync:
                 if self.whatsapp:
                     return
             if self.whatsapp:
-                alert = {key: value for key, value in event.items() if key != "captura"}
-                if event.get("captura") and self.url.startswith("https://"):
-                    alert["imagen"] = (
-                        f"{self.url}/api/detecciones/{event['evento_id']}/imagen"
-                    )
+                # La evidencia ya se guardó para el dashboard; WhatsApp recibe solo texto.
+                alert = {key: value for key, value in event.items() if key not in {"captura", "imagen"}}
                 # El servidor espera la verificación de Gemini (~3 s, hasta 20 s) antes de avisar.
                 response = self.outgoing.post(
                     f"{self.url}/alerta", json=alert, timeout=45

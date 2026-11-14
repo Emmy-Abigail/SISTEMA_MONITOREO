@@ -190,7 +190,7 @@ ESPECIES_ALERTA = {
 
 
 def generar_alerta(data, titulo=None):
-    """Alerta de una detección (va con la foto): qué, cuántos, dónde y cuándo."""
+    """Alerta de texto: qué se detectó, cuántos, dónde y cuándo."""
     especie = str(data.get("especie", ""))
     emoji, nombre = ESPECIES_ALERTA.get(especie, ("👁️", "DETECCIÓN REGISTRADA"))
     try:
@@ -535,7 +535,6 @@ def recibir_alerta():
         data = request.get_json(force=True)
         especie = data.get("especie", "desconocida")
         cantidad = data.get("cantidad", 1)
-        imagen_url = data.get("imagen")
         mensaje_prefix = data.get("mensaje_prefix", "🔔 *DETECCIÓN CONFIRMADA*")
     except:
         return jsonify({"error": "bad request"}), 400
@@ -611,7 +610,7 @@ def recibir_alerta():
             {"sid": TWILIO_PLANTILLA_ALERTA, "variables": variables_plantilla(data)}
             if TWILIO_PLANTILLA_ALERTA and event_id else None
         )
-        resultado = resultado_envio(enviar_whatsapp(numero, texto, media_url=imagen_url,
+        resultado = resultado_envio(enviar_whatsapp(numero, texto, media_url=None,
                                                     evento_id=event_id, plantilla=plantilla))
         if resultado == "ok":
             enviados += 1
