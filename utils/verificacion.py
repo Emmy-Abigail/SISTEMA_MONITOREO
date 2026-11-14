@@ -92,7 +92,7 @@ def iniciar(app, event_id):
     return terminado
 
 
-def esperar(app, event_id, timeout=20):
+def esperar(app, event_id, timeout=26):
     """Devuelve el resultado de Gemini, esperando como máximo `timeout` segundos."""
     resultado = _resultado(event_id)
     if resultado or not gemini.configurado():

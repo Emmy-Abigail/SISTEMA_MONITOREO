@@ -2694,3 +2694,4 @@ tr.pending-row td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 .analysis-grid.v2 .threat-list { max-height: none; flex: 1; overflow: hidden; align-content: start; }
 .threat-row, .threat-row > button { font-size: 12px; }
 .threat-row > button span { max-width: 220px; }
+.delete-event { margin-top: 14px; }

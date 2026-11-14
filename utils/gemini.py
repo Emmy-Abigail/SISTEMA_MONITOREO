@@ -9,14 +9,44 @@ sistema sigue funcionando como antes (la verificación es opcional).
 import base64
 import json
 import os
-import time
 
 import requests
 
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-# Flash-Lite: en las pruebas acertó 4/4 en ~3 s; los modelos que "razonan" tardaban 10-25 s.
-MODELO = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-TIMEOUT_SEGUNDOS = 12
+# Cadena de modelos Flash-Lite (rápidos, ~2-5 s). La velocidad de cada uno varía según la
+# carga de Google: si uno tarda o está saturado, se pasa al siguiente.
+MODELOS = [
+    m.strip()
+    for m in os.environ.get(
+        "GEMINI_MODEL", "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.1-flash-lite"
+    ).split(",")
+    if m.strip()
+]
+MODELO = MODELOS[0]
+TIMEOUT_SEGUNDOS = 8
+
+
+def _generar(clave, cuerpo, timeout=TIMEOUT_SEGUNDOS):
+    """Pide la respuesta al primer modelo que conteste a tiempo. Devuelve el texto o lanza el último error."""
+    ultimo_error = None
+    for modelo in MODELOS:
+        try:
+            respuesta = requests.post(
+                API_URL.format(model=modelo),
+                headers={"x-goog-api-key": clave},
+                json=cuerpo,
+                timeout=timeout,
+            )
+            if respuesta.status_code in (404, 429, 500, 503):
+                # Modelo no disponible o saturado: probar el siguiente.
+                ultimo_error = requests.HTTPError(f"{respuesta.status_code} en {modelo}")
+                continue
+            respuesta.raise_for_status()
+            partes = respuesta.json()["candidates"][0]["content"]["parts"]
+            return "".join(parte.get("text", "") for parte in partes)
+        except requests.Timeout as error:
+            ultimo_error = error
+    raise ultimo_error or requests.RequestException("Sin modelos de Gemini disponibles")
 
 OBJETIVOS = {
     "tortugas": "una o más tortugas marinas",
@@ -95,22 +125,7 @@ def analizar(especie, imagen_jpeg):
         },
     }
     try:
-        for intento in range(2):
-            respuesta = requests.post(
-                API_URL.format(model=MODELO),
-                headers={"x-goog-api-key": clave},
-                json=cuerpo,
-                timeout=TIMEOUT_SEGUNDOS,
-            )
-            # 503/429 = Google saturado: un reintento breve suele bastar.
-            if respuesta.status_code in (429, 503) and intento == 0:
-                time.sleep(1.5)
-                continue
-            break
-        respuesta.raise_for_status()
-        partes = respuesta.json()["candidates"][0]["content"]["parts"]
-        texto = "".join(parte.get("text", "") for parte in partes)
-        datos = json.loads(texto)
+        datos = json.loads(_generar(clave, cuerpo))
     except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as error:
         print(f"Gemini no pudo verificar la detección: {error}", flush=True)
         return None
@@ -162,12 +177,8 @@ def interpretar_respuesta(texto):
         },
     }
     try:
-        respuesta = requests.post(
-            API_URL.format(model=MODELO), headers={"x-goog-api-key": clave}, json=cuerpo, timeout=8
-        )
-        respuesta.raise_for_status()
-        partes = respuesta.json()["candidates"][0]["content"]["parts"]
-        datos = json.loads("".join(parte.get("text", "") for parte in partes))
+        # Respuesta del guardián: espera corta (Twilio corta el webhook a los 15 s).
+        datos = json.loads(_generar(clave, cuerpo, timeout=4))
     except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as error:
         print(f"Gemini no pudo interpretar la respuesta: {error}", flush=True)
         return None

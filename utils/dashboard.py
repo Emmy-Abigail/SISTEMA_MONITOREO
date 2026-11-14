@@ -86,6 +86,10 @@ def initialize(app):
                 evento_id TEXT NOT NULL, destinatario TEXT NOT NULL,
                 PRIMARY KEY(evento_id,destinatario)
             );
+            -- Detecciones borradas: si la cola de una cámara las reenvía, no se recrean.
+            CREATE TABLE IF NOT EXISTS detecciones_borradas (
+                id TEXT PRIMARY KEY, fecha TEXT NOT NULL
+            );
             -- Cada WhatsApp enviado: permite saber a qué alerta responde el guardián.
             CREATE TABLE IF NOT EXISTS alert_messages (
                 sid TEXT PRIMARY KEY, evento_id TEXT NOT NULL, destinatario TEXT NOT NULL
@@ -344,6 +348,11 @@ def save_detection(data, image=None):
         location_name = latitude = longitude = None
     date = parse_date(data.get("fecha", now())).isoformat(timespec="seconds")
     with connect() as connection:
+        if connection.execute(
+            "SELECT 1 FROM detecciones_borradas WHERE id=?", (event_id,)
+        ).fetchone():
+            # Fue borrada a propósito (prueba, foto de una persona…): no se vuelve a crear.
+            return event_id, False
         cursor = connection.execute(
             "INSERT OR IGNORE INTO detecciones "
             "(id,fecha,especie,cantidad,confianza,dispositivo,imagen,imagen_url,ubicacion,latitud,longitud,tipo_evento,severidad,estado) "
@@ -521,6 +530,10 @@ def delete_event(event_id):
     authorize()
     with connect() as connection:
         deleted = connection.execute("DELETE FROM detecciones WHERE id=?", (event_id,)).rowcount
+        if deleted:
+            connection.execute(
+                "INSERT OR IGNORE INTO detecciones_borradas VALUES (?,?)", (event_id, now())
+            )
         for table in ("alert_runs", "alert_deliveries", "alert_rejections", "alert_messages"):
             connection.execute(f"DELETE FROM {table} WHERE evento_id=?", (event_id,))
     if not deleted:

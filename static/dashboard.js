@@ -1623,6 +1623,27 @@ $("next-page").addEventListener("click", () => {
     refresh();
   }
 });
+// Borrar una detección y su foto (pruebas, fotos de personas…). Pide confirmación y clave.
+$("delete-event").addEventListener("click", () => {
+  if (!focusedEvent || demo) return;
+  const event = focusedEvent;
+  if (
+    !confirm(
+      "¿Borrar esta detección y su foto? Se eliminará del registro y no se puede deshacer.",
+    )
+  )
+    return;
+  mutate(async () => {
+    await api("/api/detecciones/" + encodeURIComponent(event.id), {
+      method: "DELETE",
+      headers: { "X-ALERTA-KEY": key },
+    });
+    $("event-dialog").close();
+    notify("Detección borrada.");
+    mapSignature = "";
+    await refresh();
+  });
+});
 // Ubicar la estación con el GPS del dispositivo (pensado para el celular junto a la cámara).
 $("gps-button").addEventListener("click", () => {
   if (!("geolocation" in navigator)) {

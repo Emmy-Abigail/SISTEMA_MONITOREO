@@ -57,6 +57,7 @@ class DashboardTests(unittest.TestCase):
                 "ubicaciones",
                 "alert_runs",
                 "alert_deliveries",
+                "detecciones_borradas",
             ):
                 connection.execute(f"DELETE FROM {table}")
         Path(self.module.USUARIOS_FILE).write_text("{}", encoding="utf-8")
@@ -967,6 +968,12 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/detecciones/borrar-1").status_code, 404)
         self.assertEqual(self.client.get("/api/detecciones/borrar-1/imagen").status_code, 404)
         self.assertEqual(self.client.delete("/api/detecciones/borrar-1", headers=self.headers).status_code, 404)
+        # Si la cola de la cámara la reenvía (detección o alerta), no reaparece.
+        self._detection_with_photo("borrar-1")
+        with patch.object(self.module, "enviar_whatsapp", return_value="ok"):
+            self.client.post("/alerta", headers=self.headers,
+                             json={"evento_id": "borrar-1", "especie": "tortugas", "cantidad": 1})
+        self.assertEqual(self.client.get("/api/detecciones/borrar-1").status_code, 404)
 
     def test_exact_coordinates_require_key(self):
         nest = {"nombre": "Nido 1", "latitud": -12.163456, "longitud": -77.031234, "tipo": "nido"}
