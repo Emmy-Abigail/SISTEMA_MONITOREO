@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="static/images/logo.png" alt="Logo de ÑAWI APU" width="260" />
+  <img src="docs/img/logo.png" alt="Logo de ÑAWI APU" width="200" />
 </p>
 
 <h1 align="center">ÑAWI APU</h1>
