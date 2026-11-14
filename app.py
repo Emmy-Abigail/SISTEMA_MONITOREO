@@ -81,9 +81,9 @@ _Responda con el número correspondiente a su opción._"""
 def generar_telemetria(modo_actual):
     """Genera el reporte técnico de la opción 5"""
     uptime = str(datetime.now() - TIEMPO_INICIO).split('.')[0]
-    
+
     estado_icono = "🟢 ONLINE" if modo_actual != "detenido" else "🔴 STANDBY"
-    
+
     return f"""📊 *TELEMETRÍA DE ÑAWI APU GOGO*
 `Estado: {estado_icono}`
 
@@ -125,7 +125,7 @@ def enviar_whatsapp(numero_destino, texto, media_url=None):
         msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
         if media_url:
             msg_params["media_url"] = [media_url]
-        
+
         message = client.messages.create(**msg_params)
         app.logger.info(f"✅ Mensaje a {numero_destino} - SID: {message.sid}")
         return True
@@ -196,7 +196,7 @@ def whatsapp_reply():
         "2": "gaviotines", "gaviotines": "gaviotines",
         "3": "invasores", "amenazas": "invasores"
     }
-    
+
     seleccion = especie_map.get(incoming_msg)
 
     if seleccion:
@@ -230,18 +230,18 @@ def obtener_configuracion():
     if dashboard_mode:
         return jsonify({"mode": dashboard_mode, "ubicacion": prototype()})
     estados = cargar_json(ESTADOS_FILE)
-    
-    # Buscamos si ALGUIEN tiene el sistema activo. 
+
+    # Buscamos si ALGUIEN tiene el sistema activo.
     # (Asumiendo que es 1 robot para todos. Si hay conflicto, gana el último cambio)
     activos = {k: v for k, v in estados.items() if v.get("modo") != "detenido"}
-    
+
     if activos:
         # Obtenemos el modo del usuario que lo cambió más recientemente
         ultimo = max(activos.items(), key=lambda x: x[1].get("fecha_cambio", ""))
         modo = ultimo[1].get("modo")
     else:
         modo = "detenido" # Si todos están en stop o no hay nadie
-    
+
     # Log para debug en Railway
     app.logger.info(f"📡 Robot consulta config -> Modo: {modo}")
     return jsonify({"mode": modo, "ubicacion": prototype()})
@@ -253,7 +253,7 @@ def obtener_configuracion():
 def recibir_alerta():
     # ... (Mantén tu lógica actual de alerta, está perfecta) ...
     # Solo asegúrate de usar 'generar_telemetria' o textos bonitos si modificas algo aquí.
-    
+
     # Verificación de seguridad
     authorize()
 
