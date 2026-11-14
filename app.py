@@ -10,8 +10,9 @@ from twilio.rest import Client
 from twilio.request_validator import RequestValidator
 from twilio.base.exceptions import TwilioRestException
 from werkzeug.middleware.proxy_fix import ProxyFix
-from datetime import datetime, timezone
-from utils.dashboard import initialize, configured_mode, set_mode, save_detection, prototype, connect, authorize, public_location
+from datetime import datetime, timezone, timedelta
+from utils.dashboard import initialize, configured_mode, set_mode, save_detection, prototype, connect, authorize, public_location, device_status, daily_summary
+from utils import verificacion, respuestas
 
 app = Flask(__name__)
 # Railway termina HTTPS en su proxy: sin esto Flask vería "http://" y la firma de Twilio no coincidiría.
@@ -86,51 +87,216 @@ TIEMPO_INICIO = datetime.now()
 # -----------------------
 # Funciones de Diseño (UI de Texto)
 # -----------------------
+# -----------------------
+# Textos del bot (tono cercano, en "tú", sin tecnicismos)
+# -----------------------
+PALABRAS_MENU = {"menu", "hola", "holi", "inicio", "opciones", "empezar", "buenas", "buenos dias",
+                 "buenas tardes", "buenas noches", "hi", "hello"}
+PALABRAS_AYUDA = {"ayuda", "help", "como funciona", "info", "informacion"}
+PALABRAS_PAUSA = {"3", "pausa", "pausar", "detener", "apagar", "parar"}
+PALABRAS_ESTADO = {"4", "estado", "resumen", "status", "dashboard", "como va"}
+PALABRAS_MODO = {
+    "1": "tortugas", "tortuga": "tortugas", "tortugas": "tortugas",
+    "2": "gaviotines", "gaviotin": "gaviotines", "gaviotines": "gaviotines", "aves": "gaviotines",
+}
+PALABRAS_DESHACER = {"deshacer", "deshaz", "corregir", "si era", "si habia"}
+SEP = "─────────────────────"
+MODOS = {
+    "tortugas": ("🐢", "Tortugas", "incluye alerta de intrusos"),
+    "gaviotines": ("🐦", "Gaviotines", "incluye alerta de intrusos"),
+    "invasores": ("⚠️", "Solo intrusos", "personas, perros o vehículos"),
+}
+
+
 def generar_menu_principal():
-    """Genera el menú principal profesional para ÑAWI APU"""
-    return """*ÑAWI APU* | _Guardián costero_
-─────────────────────
-*Bienvenido, Encargado de vigilancia.*
+    return (
+        "*ÑAWI APU* | _Guardián costero_\n"
+        f"{SEP}\n"
+        "1️⃣ *Vigilancia de tortugas* 🐢\n"
+        "     ↳ _Incluye alerta de intrusos_\n"
+        "2️⃣ *Vigilancia de gaviotines* 🐦\n"
+        "     ↳ _Incluye alerta de intrusos_\n"
+        "3️⃣ *Pausar vigilancia* ⏸️\n"
+        "4️⃣ *Estado y dashboard* 📊\n"
+        f"{SEP}\n"
+        "_Responda con el número de la opción._"
+    )
 
-Control de vigilancia costera y alertas de conservación.
 
-*` [ PANEL DE CONTROL ] `*
+def generar_bienvenida():
+    return "Le damos la bienvenida a *ÑAWI APU*, sistema de vigilancia costera.\n\n"
 
-1️- *VIGILANCIA TORTUGAS* 🐢
-   ↳ _Monitoreo de nidos y alertas de eclosión_
 
-2️- *VIGILANCIA GAVIOTINES* 🐦
-   ↳ _Monitoreo de nidos y alertas de eclosión_
+def generar_ayuda():
+    return (
+        "ℹ️ *AYUDA*\n"
+        f"{SEP}\n"
+        "‣ *1 o 2:* activar vigilancia\n"
+        "‣ *3:* pausar vigilancia\n"
+        "‣ *4:* estado y dashboard\n"
+        "‣ *Menú:* ver las opciones\n"
+        f"{SEP}\n"
+        "_Ante una falsa alarma, responda la alerta con «NO» o descríbala "
+        "(«no había nadie»). Para revertirlo, escriba «deshacer»._"
+    )
 
-3️- *AMENAZAS* ⚠️
-   ↳ _Detección de intrusos o actividad sospechosa_
 
-4️- *DETENER SISTEMA* 🛑
-   ↳ _Modo Standby para ahorro de energía_
+def hora_peru(fecha_iso):
+    return datetime.fromisoformat(fecha_iso).astimezone(HORA_PERU).strftime("%H:%M")
 
-5️- *DASHBOARD / ESTADO* 📊
-   ↳ _Visualización de métricas y gráficos en tiempo real_
-─────────────────────
-_Responda con el número correspondiente a su opción._"""
 
-def generar_telemetria(modo_actual):
-    """Genera el reporte técnico de la opción 5"""
-    uptime = str(datetime.now() - TIEMPO_INICIO).split('.')[0]
+def texto_camara(modo):
+    """Estado real de la cámara (según su último latido), no solo el modo elegido."""
+    camara = device_status()
+    if not camara["conectado"]:
+        desde = f" desde las {hora_peru(camara['fecha'])}" if camara["fecha"] else ""
+        return f"🔴 Sin conexión{desde}"
+    if modo == "detenido" or camara["estado"] == "esperando":
+        return "⏸️ En pausa"
+    emoji, nombre, _ = MODOS.get(modo, ("👁️", modo, ""))
+    extra = " + intrusos" if modo in ("tortugas", "gaviotines") else ""
+    return f"🟢 Vigilando {nombre.lower()}{extra}"
 
-    estado_icono = "🟢 ONLINE" if modo_actual != "detenido" else "🔴 STANDBY"
 
-    return f"""📊 *TELEMETRÍA DE ÑAWI APU*
-`Estado: {estado_icono}`
+def generar_estado(modo):
+    """Opción 5: estado real de la cámara, resumen del día y acceso al dashboard."""
+    resumen = daily_summary()
+    ubicacion = prototype()
+    lineas = ["📊 *ESTADO DE ÑAWI APU*", SEP, f"‣ *Cámara:* {texto_camara(modo)}"]
+    if ubicacion:
+        lineas.append(f"‣ *Estación:* {ubicacion['nombre']}")
+    intrusos = resumen["invasores"]
+    lineas.append(
+        f"‣ *Hoy:* {resumen['tortugas']} tortugas · {resumen['gaviotines']} gaviotines · "
+        f"{intrusos} {'intruso' if intrusos == 1 else 'intrusos'}"
+    )
+    if resumen["ultima"]:
+        ultima = resumen["ultima"]
+        que = {"tortugas": "tortuga", "gaviotines": "gaviotín"}.get(
+            ultima["especie"], (ultima["tipo_evento"] or "intrusión").split(":", 1)[-1].strip())
+        lineas.append(f"‣ *Última detección:* {hora_peru(ultima['fecha'])} ({que})")
+    if resumen["falsas_alarmas"]:
+        lineas.append(f"‣ *Falsas alarmas descartadas:* {resumen['falsas_alarmas']}")
+    lineas += [SEP, f"📡 *Dashboard:* {DASHBOARD_URL}"]
+    return "\n".join(lineas)
 
-⚙️ *SISTEMA*
-‣ *Modo:* {modo_actual.upper()}
-‣ *Uptime:* {uptime}
-‣ *Backend:* Railway Cloud
 
-📡 *ENLACE DE DATOS*
-Para ver mapas, gráficas y reportes detallados:
-👇 *Accede a nuestro Dashboard:*
-{DASHBOARD_URL}"""
+# Perú no usa horario de verano: UTC-5 fijo. El servidor de Railway corre en UTC,
+# así que sin esto las alertas mostraban 5 horas de más.
+HORA_PERU = timezone(timedelta(hours=-5), "PET")
+
+ESPECIES_ALERTA = {
+    "tortugas": ("🐢", "TORTUGA MARINA DETECTADA"),
+    "gaviotines": ("🐦", "GAVIOTÍN DETECTADO"),
+    "invasores": ("🚨", "ALERTA DE INTRUSIÓN"),
+}
+
+
+def generar_alerta(data, titulo=None):
+    """Alerta de una detección (va con la foto): qué, cuántos, dónde y cuándo."""
+    especie = str(data.get("especie", ""))
+    emoji, nombre = ESPECIES_ALERTA.get(especie, ("👁️", "DETECCIÓN REGISTRADA"))
+    try:
+        fecha = datetime.fromisoformat(str(data.get("fecha")).replace("Z", "+00:00"))
+        if fecha.tzinfo is None:
+            fecha = fecha.replace(tzinfo=timezone.utc)
+    except ValueError:
+        fecha = datetime.now(timezone.utc)
+
+    lineas = [titulo or f"{emoji} *{nombre}*", SEP]
+    if especie == "invasores":
+        # Si la IA identificó la amenaza, manda su clase (el modelo pudo confundirse).
+        detalle = data.get("ia_clase") or str(data.get("tipo_evento") or "").split(":", 1)[-1].strip()
+        if detalle:
+            lineas.append(f"‣ *Detectado:* {detalle}")
+    lineas.append(f"‣ *Cantidad:* {data.get('cantidad', 1)}")
+    lineas.append(f"‣ *Hora:* {fecha.astimezone(HORA_PERU).strftime('%H:%M')}")
+    ubicacion = data.get("ubicacion")
+    if isinstance(ubicacion, dict) and ubicacion.get("nombre"):
+        lineas.append(f"‣ *Lugar:* {ubicacion['nombre']}")
+    if data.get("ia_descripcion"):
+        lineas.append(f"_{data['ia_descripcion']}_")
+    lineas += [SEP, "_Si es una falsa alarma, responda «NO» a este mensaje._"]
+    return "\n".join(lineas)
+
+
+# Solo se puede descartar con "NO" una alerta reciente, para no tocar eventos antiguos por error.
+VENTANA_DESCARTE_HORAS = 24
+
+
+# Plantilla de WhatsApp para alertas (Content Template de Twilio, categoría "Utility").
+# Sin ella, las alertas solo llegan si el guardián escribió al bot en las últimas 24 h.
+TWILIO_PLANTILLA_ALERTA = os.environ.get("TWILIO_PLANTILLA_ALERTA", "").strip()
+
+
+def variables_plantilla(data):
+    """Variables de la plantilla de alerta (WhatsApp no admite saltos de línea en ellas)."""
+    especie = str(data.get("especie", ""))
+    emoji, nombre = ESPECIES_ALERTA.get(especie, ("👁️", "Detección registrada"))
+    if especie == "invasores":
+        detalle = data.get("ia_clase") or str(data.get("tipo_evento") or "").split(":", 1)[-1].strip()
+        titulo = f"{emoji} Intrusión: {detalle}" if detalle else f"{emoji} Intrusión detectada"
+        cantidad = f"{data.get('cantidad', 1)} detectado(s)"
+    else:
+        titulo = f"{emoji} {nombre}"
+        n = data.get("cantidad", 1)
+        cantidad = f"{n} individuo" + ("" if n == 1 else "s")
+    try:
+        fecha = datetime.fromisoformat(str(data.get("fecha")).replace("Z", "+00:00"))
+    except ValueError:
+        fecha = datetime.now(timezone.utc)
+    hora = fecha.astimezone(HORA_PERU).strftime("%d/%m %H:%M")
+    return {
+        "1": titulo,
+        "2": f"{cantidad} · {hora}",
+        "3": " ".join(str(data.get("ia_descripcion") or "Revise la zona.").split()),
+        "4": str(data.get("evento_id", "")),  # para la URL de la foto
+    }
+
+
+def descartar_alerta(numero, sid_citado=None, especie=None, hora=None):
+    """Marca como falso positivo la alerta que el guardián revisó en terreno.
+
+    Prioridad: 1) la alerta citada (respuesta deslizando el mensaje en WhatsApp);
+    2) la de la especie que menciona («no había intruso») y/o la hora («la de las 3:10»);
+    3) la última que recibió. Solo alertas de las últimas horas. Devuelve el evento o None."""
+    limite = (datetime.now(timezone.utc) - timedelta(hours=VENTANA_DESCARTE_HORAS)).isoformat(timespec="seconds")
+    columnas = "d.id, d.especie, d.cantidad, d.fecha, d.estado, d.tipo_evento"
+    with connect() as connection:
+        evento = None
+        if sid_citado:
+            evento = connection.execute(
+                f"SELECT {columnas} FROM alert_messages m JOIN detecciones d ON d.id = m.evento_id "
+                "WHERE m.sid = ? AND m.destinatario = ?",
+                (sid_citado, numero),
+            ).fetchone()
+        if evento is None:
+            candidatos = connection.execute(
+                f"SELECT {columnas} FROM alert_deliveries a JOIN detecciones d ON d.id = a.evento_id "
+                "WHERE a.destinatario = ? AND d.fecha >= ? AND d.estado != 'descartado' "
+                "ORDER BY d.fecha DESC",
+                (numero, limite),
+            ).fetchall()
+            if especie:
+                candidatos = [c for c in candidatos if c["especie"] == especie]
+            if hora and candidatos:
+                h, m = (int(x) for x in hora.split(":"))
+                def distancia(c):
+                    local = datetime.fromisoformat(c["fecha"]).astimezone(HORA_PERU)
+                    minutos = local.hour * 60 + local.minute
+                    # "3:10" puede ser 03:10 o 15:10: se toma la más cercana.
+                    return min(abs(minutos - (h * 60 + m)), abs(minutos - ((h + 12) % 24 * 60 + m)))
+                cercanos = [c for c in candidatos if distancia(c) <= 20]
+                candidatos = sorted(cercanos, key=distancia)
+            evento = candidatos[0] if candidatos else None
+        if evento is None:
+            return None
+        connection.execute(
+            "UPDATE detecciones SET estado='descartado', descartado_por='guardian' WHERE id=?",
+            (evento["id"],),
+        )
+    return dict(evento)
+
 
 # -----------------------
 # Funciones auxiliares
@@ -162,19 +328,34 @@ def guardar_json(ruta, data):
 ESTADOS_HTTP_PERMANENTES = {400, 403, 404}
 
 
-def enviar_whatsapp(numero_destino, texto, media_url=None):
-    """Devuelve "ok", "permanente" (no reintentar) o "temporal" (reintentar más tarde)."""
+def enviar_whatsapp(numero_destino, texto, media_url=None, evento_id=None, plantilla=None):
+    """Devuelve "ok", "permanente" (no reintentar) o "temporal" (reintentar más tarde).
+
+    Si se indica `evento_id`, se guarda el SID del mensaje: así, cuando el guardián
+    responda citando esa alerta, se sabe exactamente a qué detección se refiere."""
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         app.logger.error("❌ Credenciales Twilio no configuradas")
         return "temporal"
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
-        if media_url:
-            msg_params["media_url"] = [media_url]
+        if plantilla:
+            # Plantilla aprobada por Meta: permite alertar fuera de la ventana de 24 h.
+            msg_params = {"from_": TWILIO_WHATSAPP_FROM, "to": numero_destino,
+                          "content_sid": plantilla["sid"],
+                          "content_variables": json.dumps(plantilla["variables"], ensure_ascii=False)}
+        else:
+            msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
+            if media_url:
+                msg_params["media_url"] = [media_url]
 
         message = client.messages.create(**msg_params)
         app.logger.info(f"✅ Mensaje a {numero_destino} - SID: {message.sid}")
+        if evento_id:
+            with connect() as connection:
+                connection.execute(
+                    "INSERT OR IGNORE INTO alert_messages(sid,evento_id,destinatario) VALUES(?,?,?)",
+                    (message.sid, str(evento_id), numero_destino),
+                )
         return "ok"
     except TwilioRestException as e:
         tipo = "permanente" if e.status in ESTADOS_HTTP_PERMANENTES else "temporal"
@@ -227,83 +408,94 @@ def whatsapp_reply():
 
     if not numero_autorizado(from_number):
         app.logger.warning(f"🔒 Número no autorizado: {from_number}")
-        msg.body("🔒 Este número no está autorizado para usar ÑAWI APU.\n"
-                 "Pide al administrador que lo agregue a la lista de encargados.")
+        msg.body("🔒 Este número no está registrado en *ÑAWI APU*.\n_Contacte al coordinador del proyecto._")
         return str(resp)
 
     usuarios = cargar_json(USUARIOS_FILE)
     estados = cargar_json(ESTADOS_FILE)
+    # Sin tildes, mayúsculas ni signos: «Menú», «MENU» y «menu.» son lo mismo.
+    texto = respuestas.normalizar(request.values.get("Body", ""))
 
-    # ---- 1. Registrar si no existe ----
-    if incoming_msg in ["menu", "hola", "inicio", "ayuda", "help"]:
-        if from_number not in usuarios:
-            usuarios[from_number] = {
-                "registrado": True,
-                "fecha_registro": datetime.now().isoformat()
-            }
-            guardar_json(USUARIOS_FILE, usuarios)
+    # Primer contacto: se registra y recibe una bienvenida junto con la respuesta.
+    nuevo = from_number not in usuarios
+    if nuevo:
+        usuarios[from_number] = {"registrado": True, "fecha_registro": datetime.now(timezone.utc).isoformat()}
+        guardar_json(USUARIOS_FILE, usuarios)
+    saludo = generar_bienvenida() if nuevo else ""
 
-        msg.body(generar_menu_principal())
-
+    def responder(cuerpo):
+        msg.body(saludo + cuerpo)
         return str(resp)
 
-    # ---- 2. Registro automático general ----
+    if texto in PALABRAS_MENU or texto.startswith("join "):
+        return responder(generar_menu_principal())
 
-    if from_number not in usuarios:
-        usuarios[from_number] = {
-            "registrado": True,
-            "fecha_registro": datetime.now().isoformat()
-        }
+    if texto in PALABRAS_AYUDA:
+        return responder(generar_ayuda())
 
-        guardar_json(USUARIOS_FILE, usuarios)
-
-        if incoming_msg.startswith("join"):
-            msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
-            return str(resp)
-
-    # 3. Detener (Opción 4)
-    if incoming_msg in ["4", "stop", "detener", "apagar"]:
-        estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now().isoformat()}
+    # Pausa. Ojo: no se usa "stop", que en WhatsApp/Twilio da de baja al número.
+    if texto in PALABRAS_PAUSA:
+        estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now(timezone.utc).isoformat()}
         guardar_json(ESTADOS_FILE, estados)
         set_mode("detenido")
-        msg.body("🛑 *SISTEMA DETENIDO*\n\nÑawi Apu entra en modo reposo (Standby).\n\n_Escribe *Menu* para reactivar._")
-        return str(resp)
+        return responder("⏸️ *VIGILANCIA EN PAUSA*\n_Responda 1 o 2 para reanudar._")
 
-    # 4. Estado / Dashboard (Opción 5)
-    if incoming_msg in ["5", "estado", "status", "dashboard"]:
-        estado_user = configured_mode() or estados.get(from_number, {}).get("modo", "detenido")
-        msg.body(generar_telemetria(estado_user))
-        return str(resp)
+    if texto in PALABRAS_ESTADO:
+        modo = configured_mode() or estados.get(from_number, {}).get("modo", "detenido")
+        return responder(generar_estado(modo))
 
-    # 5. Selección de Modos (1, 2, 3)
-    especie_map = {
-        "1": "tortugas", "tortugas": "tortugas",
-        "2": "gaviotines", "gaviotines": "gaviotines",
-        "3": "invasores", "amenazas": "invasores"
-    }
-
-    seleccion = especie_map.get(incoming_msg)
-
+    seleccion = PALABRAS_MODO.get(texto)
     if seleccion:
-        estados[from_number] = {"modo": seleccion, "fecha_cambio": datetime.now().isoformat()}
+        anterior = configured_mode()
+        estados[from_number] = {"modo": seleccion, "fecha_cambio": datetime.now(timezone.utc).isoformat()}
         guardar_json(ESTADOS_FILE, estados)
         set_mode(seleccion)
+        emoji, nombre, detalle = MODOS[seleccion]
+        if anterior == seleccion:
+            texto_modo = f"ℹ️ La vigilancia de *{nombre.lower()}* ya está activa."
+        else:
+            texto_modo = f"✅ *VIGILANCIA ACTIVADA* {emoji}\n{nombre} · _{detalle}_"
+        # La cámara se enciende sola; solo se avisa si está sin conexión (excepción).
+        if not device_status()["conectado"]:
+            texto_modo += "\n⚠️ _Cámara sin conexión: iniciará al reconectarse._"
+        return responder(texto_modo)
 
-        emojis = {"tortugas": "🐢", "gaviotines": "🐦", "invasores": "⚠️"}
-        emoji = emojis.get(seleccion, "👁️")
+    # Deshacer el último descarte del guardián (por si el bot entendió mal).
+    if texto in PALABRAS_DESHACER:
+        with connect() as connection:
+            ultimo = connection.execute(
+                "SELECT d.id, d.fecha, d.especie FROM alert_deliveries a JOIN detecciones d ON d.id = a.evento_id "
+                "WHERE a.destinatario = ? AND d.descartado_por = 'guardian' ORDER BY d.fecha DESC LIMIT 1",
+                (from_number,),
+            ).fetchone()
+            if ultimo:
+                connection.execute(
+                    "UPDATE detecciones SET estado='nuevo', descartado_por=NULL WHERE id=?", (ultimo["id"],))
+        if ultimo:
+            return responder(f"↩️ La alerta de las {hora_peru(ultimo['fecha'])} vuelve a contar en los registros.")
+        return responder("No hay falsas alarmas recientes para revertir.")
 
-        texto_confirmacion = (
-            f"✅ *MODO {seleccion.upper()} ACTIVADO* {emoji}\n\n"
-            f"Orden enviada al monitor local: buscar {seleccion}.\n"
-            "La PC debe estar encendida con el agente abierto. Recibirás alertas cuando registre detecciones.\n\n"
-            "_Escribe *4* para Pausar o *Menu* para opciones._"
-        )
-        msg.body(texto_confirmacion)
-        return str(resp)
+    # 6. Respuesta del guardián tras revisar en terreno: «no había intruso», «la tortuga era una roca»…
+    interpretacion = respuestas.interpretar(request.values.get("Body", ""))
+    citado = request.values.get("OriginalRepliedMessageSid")
+    if interpretacion and interpretacion["descarta"]:
+        evento = descartar_alerta(from_number, citado, interpretacion["especie"], interpretacion["hora"])
+        if evento:
+            que = {"tortugas": "tortuga marina", "gaviotines": "gaviotín"}.get(
+                evento["especie"], (evento["tipo_evento"] or "intrusión").split(":", 1)[-1].strip())
+            return responder(
+                "✅ *Falsa alarma registrada*\n"
+                f"Alerta de las {hora_peru(evento['fecha'])} ({que}). Ya no cuenta en los registros.\n"
+                "_Si no era esa, escriba «deshacer»._"
+            )
+        que = {"tortugas": "de tortugas ", "gaviotines": "de gaviotines ", "invasores": "de intrusos "}.get(
+            interpretacion["especie"], "")
+        return responder(f"No se encontró una alerta {que}reciente para descartar.")
 
-    # 6. Mensaje no entendido
-    msg.body("❌ Comando no reconocido.\n_Escribe *Menu* para ver las opciones._")
-    return str(resp)
+    # Mensaje no entendido: al primer contacto se muestra el menú; luego, una guía breve.
+    if nuevo:
+        return responder(generar_menu_principal())
+    return responder("Opción no reconocida.\n_Escriba «menú» para ver las opciones o «ayuda»._")
 
 # -----------------------
 # Endpoint Config (Para Raspberry Pi)
@@ -378,17 +570,23 @@ def recibir_alerta():
                 connection.execute("UPDATE alert_runs SET estado='procesando',fecha=? WHERE evento_id=?",
                                    (ahora.isoformat(), str(event_id)))
 
+    # Segunda opinión de Gemini antes de avisar: si no ve lo detectado, no se molesta
+    # al guardián con una falsa alarma (la detección queda descartada en el dashboard).
+    if event_id:
+        ia = verificacion.esperar(app, str(event_id))
+        if ia and ia["ia_resultado"] == "no_coincide":
+            app.logger.info(f"🤖 Gemini descartó {event_id}: {ia['ia_descripcion']}")
+            with connect() as connection:
+                connection.execute("UPDATE alert_runs SET estado='filtrado_ia',enviados=0 WHERE evento_id=?",
+                                   (str(event_id),))
+            return jsonify({"status": "filtrado_ia", "enviados": 0, "fallidos": 0, "rechazados": 0,
+                            "motivo": ia["ia_descripcion"]}), 200
+        if ia and ia["ia_resultado"] == "coincide":
+            data = {**data, "ia_descripcion": ia["ia_descripcion"], "ia_clase": ia["ia_clase"]}
+
     # Solo se alerta a encargados autorizados (si hay lista); los números antiguos se ignoran.
     usuarios = {numero: datos for numero, datos in cargar_json(USUARIOS_FILE).items() if numero_autorizado(numero)}
-    texto = (
-        f"{mensaje_prefix}\n"
-        "─────────────────────\n"
-        f"📍 *Especie:* {especie.upper()}\n"
-        f"🔢 *Cantidad:* {cantidad}\n"
-        f"🕐 *Hora:* {datetime.now().strftime('%H:%M:%S')}\n"
-        "─────────────────────"
-    )
-    if imagen_url: texto += "\n📸 _Evidencia adjunta:_"
+    texto = generar_alerta(data, titulo=data.get("mensaje_prefix"))
 
     enviados = 0
     fallidos = 0      # errores temporales: vale la pena reintentar
@@ -404,7 +602,12 @@ def recibir_alerta():
             if rejected:
                 rechazados += 1
                 continue
-        resultado = resultado_envio(enviar_whatsapp(numero, texto, media_url=imagen_url))
+        plantilla = (
+            {"sid": TWILIO_PLANTILLA_ALERTA, "variables": variables_plantilla(data)}
+            if TWILIO_PLANTILLA_ALERTA and event_id else None
+        )
+        resultado = resultado_envio(enviar_whatsapp(numero, texto, media_url=imagen_url,
+                                                    evento_id=event_id, plantilla=plantilla))
         if resultado == "ok":
             enviados += 1
             if event_id:

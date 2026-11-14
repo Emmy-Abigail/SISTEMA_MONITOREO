@@ -168,6 +168,50 @@ def prototype():
     return dict(row) if row else None
 
 
+def device_status():
+    """Estado real de la cámara según su último latido: conectada, en pausa o desconectada."""
+    with connect() as connection:
+        row = connection.execute("SELECT nombre,estado,fecha FROM dispositivo WHERE id=1").fetchone()
+    if not row:
+        return {"conectado": False, "estado": None, "fecha": None, "nombre": None}
+    data = dict(row)
+    data["conectado"] = (
+        datetime.now(timezone.utc) - parse_date(data["fecha"])
+    ).total_seconds() < 25 and data["estado"] != "desconectado"
+    return data
+
+
+def daily_summary(utc_offset_hours=-5):
+    """Resumen desde la medianoche (hora de Perú): conteos válidos, falsas alarmas y última detección."""
+    local = timezone(timedelta(hours=utc_offset_hours))
+    midnight = datetime.now(local).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = midnight.astimezone(timezone.utc).isoformat(timespec="seconds")
+    with connect() as connection:
+        totals = {
+            row["especie"]: row["total"]
+            for row in connection.execute(
+                "SELECT especie, CASE WHEN especie='invasores' THEN COUNT(*) ELSE SUM(cantidad) END total "
+                "FROM detecciones WHERE fecha >= ? AND estado != 'descartado' GROUP BY especie",
+                (since,),
+            )
+        }
+        false_alarms = connection.execute(
+            "SELECT COUNT(*) FROM detecciones WHERE fecha >= ? AND estado = 'descartado'", (since,)
+        ).fetchone()[0]
+        last = connection.execute(
+            "SELECT especie, fecha, tipo_evento FROM detecciones WHERE fecha >= ? AND estado != 'descartado' "
+            "ORDER BY fecha DESC LIMIT 1",
+            (since,),
+        ).fetchone()
+    return {
+        "tortugas": totals.get("tortugas", 0),
+        "gaviotines": totals.get("gaviotines", 0),
+        "invasores": totals.get("invasores", 0),
+        "falsas_alarmas": false_alarms,
+        "ultima": dict(last) if last else None,
+    }
+
+
 def has_key():
     """True si la petición trae la ALERTA_KEY correcta (o si el servidor no usa clave)."""
     key = current_app.config.get("ALERTA_KEY")
@@ -744,6 +788,7 @@ def camera_image():
 
 
 @dashboard.get("/api/detecciones/<event_id>/imagen")
+@dashboard.get("/api/detecciones/imagen/<event_id>")  # para plantillas: la variable va al final
 def detection_image(event_id):
     with connect() as connection:
         row = connection.execute(
