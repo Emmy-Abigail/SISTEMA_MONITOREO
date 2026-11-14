@@ -4,7 +4,9 @@ En la Raspberry Pi 5 las cámaras CSI (como la NoIR V2, sensor IMX219) funcionan
 libcamera: OpenCV no las puede abrir con VideoCapture, por eso se usa Picamera2.
 """
 
+import glob
 import os
+from pathlib import Path
 
 import cv2
 
@@ -14,6 +16,10 @@ FUENTES = ("auto", "opencv", "picamera")
 # si es NoIR o normal; la estación usa la NoIR V2, así que se asume NoIR.
 # Para una cámara V2 normal: --tuning ninguno.
 TUNING_POR_SENSOR = {"imx219": "imx219_noir.json"}
+DIRECTORIOS_TUNING = ("/usr/share/libcamera/ipa/rpi", "/usr/local/share/libcamera/ipa/rpi")
+_SIN_PREPARAR = object()
+_tuning = _SIN_PREPARAR
+ES_WINDOWS = os.name == "nt"
 
 ROTACIONES = {
     0: None,
@@ -23,22 +29,73 @@ ROTACIONES = {
 }
 
 
-def camaras_csi():
+def _sensor_conectado():
+    """Sensor CSI conectado, leído del sistema (sin iniciar libcamera)."""
+    for sensor in TUNING_POR_SENSOR:
+        if glob.glob(f"/sys/bus/i2c/drivers/{sensor}/*-*"):
+            return sensor
+    return None
+
+
+def _plataforma():
+    """Carpeta de ajustes de libcamera: pisp en la Raspberry Pi 5, vc4 en las anteriores."""
+    try:
+        modelo = Path("/proc/device-tree/model").read_text(errors="ignore")
+    except OSError:
+        return "vc4"
+    return "pisp" if "Raspberry Pi 5" in modelo or "Compute Module 5" in modelo else "vc4"
+
+
+def ruta_tuning(tuning="auto"):
+    """Ruta del archivo de ajuste de libcamera que se usará, o None para el de fábrica."""
+    if tuning in (None, "", "ninguno", "none"):
+        return None
+    if tuning == "auto":
+        tuning = TUNING_POR_SENSOR.get(_sensor_conectado())
+        if not tuning:
+            return None
+    if os.sep in tuning or "/" in tuning:
+        candidatos = [Path(tuning)]
+    else:
+        candidatos = [Path(base) / _plataforma() / tuning for base in DIRECTORIOS_TUNING]
+    for candidato in candidatos:
+        if candidato.is_file():
+            return str(candidato)
+    print(f"No se encontró el ajuste {tuning}: se usa el de fábrica.", flush=True)
+    return None
+
+
+def preparar_tuning(tuning="auto"):
+    """Elige el ajuste de la cámara antes de la primera consulta a libcamera.
+
+    libcamera lee el ajuste (variable LIBCAMERA_RPI_TUNING_FILE) una sola vez, al iniciarse.
+    Si se consulta la lista de cámaras antes, queda el ajuste de fábrica para todo el proceso.
+    """
+    global _tuning
+    if _tuning is _SIN_PREPARAR:
+        _tuning = ruta_tuning(tuning)
+        if _tuning:
+            os.environ["LIBCAMERA_RPI_TUNING_FILE"] = _tuning
+    return _tuning
+
+
+def camaras_csi(tuning="auto"):
     """Lista de cámaras CSI detectadas por libcamera, o [] si Picamera2 no está disponible."""
     try:
         from picamera2 import Picamera2
     except ImportError:
         return []
+    preparar_tuning(tuning)
     try:
         return list(Picamera2.global_camera_info())
     except Exception:
         return []
 
 
-def resolver_fuente(fuente):
+def resolver_fuente(fuente, tuning="auto"):
     if fuente != "auto":
         return fuente
-    if os.name != "nt" and camaras_csi():
+    if not ES_WINDOWS and camaras_csi(tuning):
         return "picamera"
     return "opencv"
 
@@ -69,23 +126,16 @@ class CamaraPicamera:
     def __init__(self, indice=0, ancho=640, alto=480, tuning="auto"):
         from picamera2 import Picamera2
 
-        info = camaras_csi()
+        info = camaras_csi(tuning)
         if indice >= len(info):
             raise RuntimeError("No se detectó ninguna cámara CSI. Revisa el cable y el conector.")
         sensor = str(info[indice].get("Model", "")).lower()
-        if tuning == "auto":
-            tuning = TUNING_POR_SENSOR.get(sensor)
-        elif tuning in ("", "ninguno", "none"):
-            tuning = None
-        datos_tuning = None
-        if tuning:
-            try:
-                datos_tuning = Picamera2.load_tuning_file(tuning)
-            except Exception as error:
-                print(f"No se pudo cargar el ajuste {tuning}: {error}. Se usa el de fábrica.", flush=True)
-                tuning = None
-        self.descripcion = f"CSI {sensor or '?'}" + (f" ({tuning})" if tuning else "")
-        self.camara = Picamera2(camera_num=indice, tuning=datos_tuning)
+        ruta = preparar_tuning(tuning)
+        self.descripcion = f"CSI {sensor or '?'}" + (
+            f" ({os.path.basename(ruta)})" if ruta else " (ajuste de fábrica)"
+        )
+        # Se pasa la misma ruta: Picamera2 la vuelve a fijar (y sin ella borraría la variable).
+        self.camara = Picamera2(camera_num=indice, tuning=ruta)
         try:
             opciones = {}
             modo = modo_campo_completo(self.camara)
@@ -125,7 +175,7 @@ class CamaraPicamera:
 
 def abrir(fuente="auto", indice=0, ancho=640, alto=480, tuning="auto"):
     """Abre la cámara y la devuelve lista para read(), o None si no está disponible."""
-    fuente = resolver_fuente(fuente)
+    fuente = resolver_fuente(fuente, tuning)
     if fuente == "picamera":
         try:
             camara = CamaraPicamera(indice, ancho, alto, tuning)

@@ -1,8 +1,11 @@
 """Pruebas de la fuente de video (webcam o cámara CSI de la Raspberry Pi), sin hardware."""
 
+import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -10,7 +13,7 @@ import numpy as np
 from src import camara
 
 
-def picamera2_falso(modelo="imx219"):
+def picamera2_falso(modelo="imx219", al_consultar=None):
     """Módulo picamera2 simulado con una cámara del modelo indicado."""
     instancia = MagicMock()
     instancia.capture_array.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -22,19 +25,53 @@ def picamera2_falso(modelo="imx219"):
         {"size": (3280, 2464), "crop_limits": (0, 0, 3280, 2464), "fps": 21.19},
     ]
     clase = MagicMock(return_value=instancia)
-    clase.global_camera_info.return_value = [{"Model": modelo, "Num": 0}] if modelo else []
-    clase.load_tuning_file.side_effect = lambda nombre: {"archivo": nombre}
+    camaras = [{"Model": modelo, "Num": 0}] if modelo else []
+
+    def consultar():
+        if al_consultar:
+            al_consultar()
+        return camaras
+
+    clase.global_camera_info.side_effect = consultar
     return types.SimpleNamespace(Picamera2=clase), clase, instancia
 
 
 class CamaraTests(unittest.TestCase):
+    def setUp(self):
+        camara._tuning = camara._SIN_PREPARAR
+        self.directorio = tempfile.TemporaryDirectory()
+        pisp = Path(self.directorio.name) / "pisp"
+        pisp.mkdir()
+        self.noir = pisp / "imx219_noir.json"
+        self.noir.write_text("{}")
+        self.parches = [
+            patch.object(camara, "DIRECTORIOS_TUNING", (self.directorio.name,)),
+            patch.object(camara, "_plataforma", return_value="pisp"),
+            patch.object(camara, "_sensor_conectado", return_value="imx219"),
+            patch.dict(os.environ, {}, clear=False),
+        ]
+        for parche in self.parches:
+            parche.start()
+        os.environ.pop("LIBCAMERA_RPI_TUNING_FILE", None)
+
+    def tearDown(self):
+        for parche in reversed(self.parches):
+            parche.stop()
+        camara._tuning = camara._SIN_PREPARAR
+        self.directorio.cleanup()
+
     def test_noir_v2_uses_picamera_with_noir_tuning(self):
-        modulo, clase, instancia = picamera2_falso("imx219")
-        with patch.dict(sys.modules, {"picamera2": modulo}), patch.object(camara.os, "name", "posix"):
-            self.assertEqual(camara.resolver_fuente("auto"), "picamera")
+        visto = []
+        # libcamera lee el ajuste al iniciarse: ya debe estar fijado en la primera consulta.
+        modulo, clase, instancia = picamera2_falso(
+            "imx219", al_consultar=lambda: visto.append(os.environ.get("LIBCAMERA_RPI_TUNING_FILE"))
+        )
+        with patch.dict(sys.modules, {"picamera2": modulo}), patch.object(camara, "ES_WINDOWS", False):
             fuente = camara.abrir("auto", 0)
             self.assertIsNotNone(fuente)
-            clase.assert_called_once_with(camera_num=0, tuning={"archivo": "imx219_noir.json"})
+            self.assertEqual(visto[0], str(self.noir))
+            clase.assert_called_once_with(camera_num=0, tuning=str(self.noir))
+            self.assertIn("imx219_noir.json", fuente.descripcion)
             opciones = instancia.create_video_configuration.call_args.kwargs
             self.assertEqual(opciones["main"], {"size": (640, 480), "format": "RGB888"})
             # Se usa el modo de campo completo, no el 640×480 que recorta el centro.
@@ -49,12 +86,22 @@ class CamaraTests(unittest.TestCase):
     def test_tuning_can_be_disabled(self):
         modulo, clase, _ = picamera2_falso("imx219")
         with patch.dict(sys.modules, {"picamera2": modulo}):
-            camara.abrir("picamera", 0, tuning="ninguno").release()
+            fuente = camara.abrir("picamera", 0, tuning="ninguno")
             clase.assert_called_once_with(camera_num=0, tuning=None)
+            self.assertNotIn("LIBCAMERA_RPI_TUNING_FILE", os.environ)
+            self.assertIn("fábrica", fuente.descripcion)
+
+    def test_missing_tuning_file_falls_back_to_default(self):
+        self.noir.unlink()
+        self.assertIsNone(camara.ruta_tuning("auto"))
+        with patch.object(camara, "_sensor_conectado", return_value=None):
+            self.noir.write_text("{}")
+            self.assertIsNone(camara.ruta_tuning("auto"))  # sensor desconocido: de fábrica
+        self.assertEqual(camara.ruta_tuning(str(self.noir)), str(self.noir))
 
     def test_without_csi_camera_falls_back_to_webcam(self):
         modulo, _, _ = picamera2_falso(None)
-        with patch.dict(sys.modules, {"picamera2": modulo}), patch.object(camara.os, "name", "posix"):
+        with patch.dict(sys.modules, {"picamera2": modulo}), patch.object(camara, "ES_WINDOWS", False):
             self.assertEqual(camara.resolver_fuente("auto"), "opencv")
             self.assertIsNone(camara.abrir("picamera", 0))
         with patch.dict(sys.modules, {"picamera2": None}):
