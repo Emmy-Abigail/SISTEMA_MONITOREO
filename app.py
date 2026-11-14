@@ -6,11 +6,11 @@ from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from datetime import datetime
-from utils.dashboard import initialize, configured_mode, clear_mode, save_detection
+from utils.dashboard import initialize, configured_mode, set_mode, save_detection, prototype, connect, authorize
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
-app.config["ALERTA_KEY"] = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
+app.config["ALERTA_KEY"] = os.environ.get("ALERTA_KEY", "")
 initialize(app)
 
 # -----------------------
@@ -41,7 +41,7 @@ for f in [USUARIOS_FILE, ESTADOS_FILE]:
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM")
-ALERTA_KEY = os.environ.get("ALERTA_KEY", "tu_clave_secreta_123")
+ALERTA_KEY = os.environ.get("ALERTA_KEY", "")
 DASHBOARD_URL = os.environ.get(
     "DASHBOARD_URL", "https://sistemamonitoreo-production-8883a6d5.up.railway.app/")
 
@@ -53,11 +53,11 @@ TIEMPO_INICIO = datetime.now()
 # -----------------------
 def generar_menu_principal():
     """Genera el menú principal profesional para ÑAWI APU"""
-    return """*ÑAWI APU* | _Guardián costero_
+    return """*ÑAWI APU GOGO* | _Guardián costero_
 ─────────────────────
 *Bienvenido, Encargado de vigilancia.*
 
-El sistema de visión artificial está activo y listo para operar.
+Control de vigilancia costera y alertas de conservación.
 
 *` [ PANEL DE CONTROL ] `*
 
@@ -84,7 +84,7 @@ def generar_telemetria(modo_actual):
     
     estado_icono = "🟢 ONLINE" if modo_actual != "detenido" else "🔴 STANDBY"
     
-    return f"""📊 *TELEMETRÍA DE ÑAWI APU*
+    return f"""📊 *TELEMETRÍA DE ÑAWI APU GOGO*
 `Estado: {estado_icono}`
 
 ⚙️ *SISTEMA*
@@ -172,15 +172,15 @@ def whatsapp_reply():
 
         guardar_json(USUARIOS_FILE, usuarios)
 
-        msg.body(f"✅ *¡Bienvenido a ÑAWI APU!*\n\n{generar_menu_principal()}")
-
-        return str(resp)
+        if incoming_msg.startswith("join"):
+            msg.body(f"✅ *¡Bienvenido a ÑAWI APU GOGO!*\n\n{generar_menu_principal()}")
+            return str(resp)
 
     # 3. Detener (Opción 4)
     if incoming_msg in ["4", "stop", "detener", "apagar"]:
         estados[from_number] = {"modo": "detenido", "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
-        clear_mode()
+        set_mode("detenido")
         msg.body("🛑 *SISTEMA DETENIDO*\n\nÑawi Apu entra en modo reposo (Standby).\n\n_Escribe *Menu* para reactivar._")
         return str(resp)
 
@@ -202,15 +202,15 @@ def whatsapp_reply():
     if seleccion:
         estados[from_number] = {"modo": seleccion, "fecha_cambio": datetime.now().isoformat()}
         guardar_json(ESTADOS_FILE, estados)
-        clear_mode()
+        set_mode(seleccion)
 
         emojis = {"tortugas": "🐢", "gaviotines": "🐦", "invasores": "⚠️"}
         emoji = emojis.get(seleccion, "👁️")
 
         texto_confirmacion = (
             f"✅ *MODO {seleccion.upper()} ACTIVADO* {emoji}\n\n"
-            f"El algoritmo de visión está buscando {seleccion}.\n"
-            "Te notificaré inmediatamente si detecto algo.\n\n"
+            f"Orden enviada al monitor local: buscar {seleccion}.\n"
+            "La PC debe estar encendida con el agente abierto. Recibirás alertas cuando registre detecciones.\n\n"
             "_Escribe *4* para Pausar o *Menu* para opciones._"
         )
         msg.body(texto_confirmacion)
@@ -228,7 +228,7 @@ def obtener_configuracion():
     """La Raspberry consulta esto para saber si prender la cámara o dormir"""
     dashboard_mode = configured_mode()
     if dashboard_mode:
-        return jsonify({"mode": dashboard_mode})
+        return jsonify({"mode": dashboard_mode, "ubicacion": prototype()})
     estados = cargar_json(ESTADOS_FILE)
     
     # Buscamos si ALGUIEN tiene el sistema activo. 
@@ -244,7 +244,7 @@ def obtener_configuracion():
     
     # Log para debug en Railway
     app.logger.info(f"📡 Robot consulta config -> Modo: {modo}")
-    return jsonify({"mode": modo})
+    return jsonify({"mode": modo, "ubicacion": prototype()})
 
 # -----------------------
 # Endpoint Alerta (Recibe de Raspberry)
@@ -255,8 +255,7 @@ def recibir_alerta():
     # Solo asegúrate de usar 'generar_telemetria' o textos bonitos si modificas algo aquí.
     
     # Verificación de seguridad
-    if request.headers.get("X-ALERTA-KEY") != ALERTA_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+    authorize()
 
     try:
         data = request.get_json(force=True)
@@ -272,6 +271,17 @@ def recibir_alerta():
     except ValueError as error:
         app.logger.warning("Alerta sin registro en el dashboard: %s", error)
 
+    event_id = data.get("evento_id")
+    if event_id:
+        with connect() as connection:
+            claim = connection.execute(
+                "INSERT OR IGNORE INTO alert_runs(evento_id,estado) VALUES(?, 'procesando')", (str(event_id),))
+            if not claim.rowcount:
+                previous = connection.execute("SELECT * FROM alert_runs WHERE evento_id=?", (str(event_id),)).fetchone()
+                if previous["estado"] != "pendiente":
+                    return jsonify({"status": previous["estado"], "enviados": previous["enviados"], "duplicado": True}), (503 if previous["estado"] == "procesando" else 200)
+                connection.execute("UPDATE alert_runs SET estado='procesando' WHERE evento_id=?", (str(event_id),))
+
     usuarios = cargar_json(USUARIOS_FILE)
     texto = (
         f"{mensaje_prefix}\n"
@@ -284,11 +294,28 @@ def recibir_alerta():
     if imagen_url: texto += "\n📸 _Evidencia adjunta:_"
 
     enviados = 0
+    fallidos = 0
     for numero in usuarios.keys():
+        if event_id:
+            with connect() as connection:
+                accepted = connection.execute("SELECT 1 FROM alert_deliveries WHERE evento_id=? AND destinatario=?", (str(event_id),numero)).fetchone()
+            if accepted:
+                enviados += 1
+                continue
         if enviar_whatsapp(numero, texto, media_url=imagen_url):
             enviados += 1
+            if event_id:
+                with connect() as connection:
+                    connection.execute("INSERT OR IGNORE INTO alert_deliveries VALUES(?,?)", (str(event_id),numero))
+        else:
+            fallidos += 1
 
-    return jsonify({"status": "ok", "enviados": enviados}), 200
+    status = "pendiente" if fallidos else "ok"
+    if event_id:
+        with connect() as connection:
+            connection.execute("UPDATE alert_runs SET estado=?,enviados=? WHERE evento_id=?", (status,enviados,str(event_id)))
+
+    return jsonify({"status": status, "enviados": enviados, "fallidos": fallidos}), (503 if fallidos else 200)
 
 # -----------------------
 # Ejecución

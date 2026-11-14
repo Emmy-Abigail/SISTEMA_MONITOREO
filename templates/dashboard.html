@@ -1,258 +1,686 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-theme="pacifico">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#153b50" />
-    <title>Ñawi Apu · Monitoreo costero</title>
+    <meta name="theme-color" content="#051a29" />
+    <meta
+      name="description"
+      content="ÑAWI APU GOGO, observatorio de fauna marina y amenazas en la costa peruana."
+    />
+    <title>ÑAWI APU GOGO · Observatorio costero</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='vendor/bootstrap-icons.min.css') }}"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='vendor/leaflet.css') }}"
     />
     <link
       rel="stylesheet"
       href="{{ url_for('static', filename='dashboard.css') }}"
     />
     <script
+      src="{{ url_for('static', filename='vendor/leaflet.js') }}"
+      defer
+    ></script>
+    <script
+      src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"
+      defer
+    ></script>
+    <script
       src="{{ url_for('static', filename='dashboard.js') }}"
       defer
     ></script>
   </head>
   <body>
-    <aside class="sidebar">
-      <a class="brand" href="/" aria-label="Ñawi Apu, inicio"
-        ><span class="brand-mark" aria-hidden="true">◉</span
-        ><span>Ñawi Apu<small>Monitoreo costero</small></span></a
+    <a class="skip-link" href="#resumen">Ir al contenido</a>
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="/" aria-label="ÑAWI APU GOGO, inicio"
+        ><span class="brand-icon"
+          ><i class="bi bi-water" aria-hidden="true"></i></span
+        ><span><b>ÑAWI APU GOGO</b><small>Observatorio costero</small></span></a
       >
-      <nav aria-label="Navegación">
-        <a class="selected" href="#monitor">Monitoreo</a
-        ><a href="#actividad">Actividad y capturas</a>
+      <nav aria-label="Navegación principal">
+        <a class="selected" href="#resumen"
+          ><i class="bi bi-grid-1x2" aria-hidden="true"></i>Resumen</a
+        >
+        <a href="#registros"
+          ><i class="bi bi-bullseye" aria-hidden="true"></i>Detecciones</a
+        >
+        <a href="#mapa"
+          ><i class="bi bi-map" aria-hidden="true"></i>Mapa interactivo</a
+        >
+        <a href="#especies"
+          ><i class="bi bi-binoculars" aria-hidden="true"></i>Especies</a
+        >
+        <a href="#amenazas"
+          ><i class="bi bi-exclamation-triangle" aria-hidden="true"></i
+          >Amenazas<span class="nav-count" id="nav-threats" hidden></span
+        ></a>
+        <button type="button" data-export>
+          <i class="bi bi-file-earmark-arrow-down" aria-hidden="true"></i
+          >Exportar reporte
+        </button>
       </nav>
-      <div class="sidebar-bottom">
-        <span class="signal-dot" id="connection-dot"></span
-        ><span id="connection-label">Conectando al servidor</span>
+      <div class="sidebar-section">
+        <span>Operación</span
+        ><button type="button" data-settings>
+          <i class="bi bi-sliders2" aria-hidden="true"></i>Configuración</button
+        ><button type="button" id="demo-button">
+          <i class="bi bi-play-circle" aria-hidden="true"></i>Ver demostración
+        </button>
+      </div>
+      <div class="sidebar-foot">
+        <i class="bi bi-water" aria-hidden="true"></i
+        ><span>Costa peruana<small>Lima y Callao, Perú</small></span>
       </div>
     </aside>
     <main>
-      <header class="page-header">
-        <div>
-          <h1>Monitoreo costero</h1>
-        </div>
-        <div class="header-tools">
-          <span id="clock"></span
-          ><button class="button subtle" id="key-button" type="button">
-            Clave de control
+      <div class="page-art" aria-hidden="true"></div>
+      <header class="topbar">
+        <button
+          class="icon-button mobile-menu"
+          type="button"
+          id="menu-button"
+          aria-label="Mostrar navegación"
+        >
+          <i class="bi bi-list"></i>
+        </button>
+        <label class="search-box"
+          ><i class="bi bi-search" aria-hidden="true"></i
+          ><input
+            id="global-search"
+            type="search"
+            placeholder="Buscar detecciones, especies, zonas…"
+            aria-label="Buscar detecciones"
+          /><kbd>/</kbd></label
+        >
+        <div class="topbar-actions">
+          <label class="period-box"
+            ><i class="bi bi-calendar3" aria-hidden="true"></i
+            ><select id="period-filter" aria-label="Rango de fechas">
+              <option value="1">Última hora</option>
+              <option value="24" selected>Últimas 24 horas</option>
+              <option value="168">Últimos 7 días</option>
+              <option value="720">Últimos 30 días</option>
+              <option value="custom">Elegir fechas</option>
+            </select></label
+          >
+          <button
+            class="icon-button"
+            id="refresh-button"
+            type="button"
+            title="Actualizar datos"
+            aria-label="Actualizar datos"
+          >
+            <i class="bi bi-arrow-repeat"></i>
+          </button>
+          <button class="button export-button" type="button" data-export>
+            <i class="bi bi-download" aria-hidden="true"></i>Exportar
+          </button>
+          <button
+            class="profile-button"
+            type="button"
+            data-settings
+            aria-label="Abrir configuración"
+          >
+            <span>NA</span><b>Estación costera<small>ÑAWI APU GOGO</small></b
+            ><i class="bi bi-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
       </header>
-      <p class="notice" id="notice" role="status" hidden></p>
-      <section
-        class="monitor-layout"
-        id="monitor"
-        aria-label="Monitoreo de cámara"
-      >
-        <div class="camera-panel">
-          <div class="camera-toolbar">
-            <span
-              ><span class="signal-dot" id="camera-dot"></span
-              ><strong id="device-name">Cámara PC</strong></span
-            ><span id="device-status">Sin dispositivo conectado</span>
+      <section class="page-heading" id="resumen">
+        <div>
+          <div class="heading-context">
+            <span class="mini-line"></span>Conservación marina · Perú
           </div>
-          <div class="camera-stage">
-            <img
-              id="camera-image"
-              alt="Última imagen recibida del dispositivo de monitoreo"
-              hidden
-            />
-            <div class="camera-empty" id="camera-empty">
-              <span class="camera-symbol" aria-hidden="true">◎</span>
-              <h2>Esperando la cámara</h2>
-              <p>
-                Ejecuta el monitor en tu PC para recibir imágenes y detecciones.
-              </p>
-              <button
-                type="button"
-                class="button camera-help"
-                id="setup-button"
-              >
-                Cómo conectar mi cámara
-              </button>
-            </div>
-            <span class="camera-caption" id="camera-caption" hidden></span>
-          </div>
-          <div class="camera-footer">
-            <span>Vista del dispositivo · actualización cada 5 s</span
-            ><span id="last-frame">Sin imagen recibida</span>
-          </div>
+          <h1>Monitoreo del Pacífico</h1>
+          <p>Registro de fauna y posibles amenazas en la costa peruana.</p>
         </div>
-        <section class="monitor-controls" aria-label="Control y conteos">
-          <div class="control-heading">
-            <span class="section-kicker">Monitoreo</span
-            ><strong id="mode-label">Consultando estado</strong>
-          </div>
-          <label for="mode-select">Especie a monitorear</label
-          ><select id="mode-select">
-            <option value="tortugas">Tortugas</option>
-            <option value="gaviotines">Gaviotines</option>
-          </select>
-          <div class="control-buttons">
-            <button class="button primary" type="button" id="start-button">
-              Iniciar monitoreo</button
-            ><button class="button subtle" type="button" id="stop-button">
-              Detener
-            </button>
-          </div>
-          <p class="control-hint" id="control-hint">
-            El control se aplica cuando el monitor de la PC está conectado.
-          </p>
-          <div class="species-count">
-            <span
-              ><span class="species-icon turtle" aria-hidden="true">🐢</span
-              >Tortugas</span
-            ><strong id="turtle-count">0</strong>
-          </div>
-          <div class="species-count">
-            <span
-              ><span class="species-icon bird" aria-hidden="true">🐦</span
-              >Gaviotines</span
-            ><strong id="bird-count">0</strong>
-          </div>
-          <p class="count-caption">
-            Suma de objetos reportados en el período. Un individuo puede
-            aparecer en varias detecciones.
-          </p>
-        </section>
+        <div class="monitor-status">
+          <span id="status-pill" class="status-pill"
+            ><span class="status-dot"></span
+            ><span id="monitor-status">Conectando</span></span
+          ><small id="last-update">Esperando datos del servidor</small>
+        </div>
       </section>
-      <section class="activity-section" id="actividad">
-        <div class="section-header">
+      <div class="notice" id="notice" role="status" hidden></div>
+      <div class="demo-banner" id="demo-banner" hidden>
+        <i class="bi bi-info-circle" aria-hidden="true"></i
+        ><span
+          >Demostración visual · Todos los eventos y ubicaciones de esta vista
+          son ilustrativos.</span
+        ><button type="button" id="exit-demo">Volver a datos reales</button>
+      </div>
+      <section class="kpi-grid" aria-label="Indicadores del período">
+        <article class="kpi-card">
+          <span class="kpi-icon"
+            ><i class="bi bi-bullseye" aria-hidden="true"></i
+          ></span>
           <div>
-            <h2>Actividad de detección</h2>
-            <p id="event-caption">Sin detecciones registradas</p>
-          </div>
-          <div class="filters">
-            <label
-              >Especie<select id="species-filter">
-                <option value="todas">Todas las especies</option>
-                <option value="tortugas">Tortugas</option>
-                <option value="gaviotines">Gaviotines</option>
-              </select></label
-            ><label
-              >Período<select id="period-filter">
-                <option value="1">Última hora</option>
-                <option value="24" selected>Últimas 24 horas</option>
-                <option value="168">Últimos 7 días</option>
-              </select></label
-            >
-          </div>
-        </div>
-        <div class="chart-shell">
-          <div class="chart-label">
-            <span>Distribución de eventos</span><span id="chart-total">0 eventos</span>
+            <h2>Detecciones totales</h2>
+            <strong id="kpi-total" class="loading-value">—</strong>
+            <p id="change-total">Cargando período</p>
           </div>
           <canvas
-            id="activity-chart"
-            role="img"
-            aria-label="Gráfico de eventos de detección por hora"
+            class="sparkline"
+            id="spark-total"
+            aria-hidden="true"
           ></canvas>
-          <p class="chart-empty" id="chart-empty">
-            Las detecciones aparecerán aquí cuando el monitor identifique una
-            especie.
-          </p>
+        </article>
+        <article class="kpi-card">
+          <span class="kpi-icon animal" aria-hidden="true">🐢</span>
+          <div>
+            <h2>Tortugas detectadas</h2>
+            <strong id="kpi-tortugas" class="loading-value">—</strong>
+            <p id="change-tortugas">Cargando período</p>
+          </div>
+          <canvas
+            class="sparkline"
+            id="spark-tortugas"
+            aria-hidden="true"
+          ></canvas>
+        </article>
+        <article class="kpi-card bird-card">
+          <span class="kpi-icon animal" aria-hidden="true">🐦</span>
+          <div>
+            <h2>Gaviotines detectados</h2>
+            <strong id="kpi-gaviotines" class="loading-value">—</strong>
+            <p id="change-gaviotines">Cargando período</p>
+          </div>
+          <canvas
+            class="sparkline"
+            id="spark-gaviotines"
+            aria-hidden="true"
+          ></canvas>
+        </article>
+        <article class="kpi-card threat-kpi">
+          <span class="kpi-icon"
+            ><i class="bi bi-exclamation-triangle" aria-hidden="true"></i
+          ></span>
+          <div>
+            <h2>Amenazas registradas</h2>
+            <strong id="kpi-invasores" class="loading-value">—</strong>
+            <p id="change-invasores">Cargando período</p>
+          </div>
+          <canvas
+            class="sparkline"
+            id="spark-invasores"
+            aria-hidden="true"
+          ></canvas>
+        </article>
+      </section>
+      <div class="analysis-grid">
+        <section class="panel map-panel" id="mapa">
+          <div class="panel-heading">
+            <div class="panel-title">
+              <i class="bi bi-geo-alt-fill" aria-hidden="true"></i
+              ><span
+                ><h2>Mapa de vigilancia</h2>
+                <small>Costa de Lima y Callao</small></span
+              >
+            </div>
+            <button
+              class="icon-button"
+              id="expand-map"
+              type="button"
+              aria-label="Ampliar mapa"
+              title="Ampliar mapa"
+            >
+              <i class="bi bi-arrows-fullscreen"></i>
+            </button>
+          </div>
+          <div class="map-container">
+            <div
+              id="map"
+              role="region"
+              aria-label="Mapa interactivo para fijar el prototipo"
+            ></div>
+            <div class="map-help" id="map-help" hidden>
+              Haz clic en el mapa para fijar una ubicación.
+            </div>
+            <div class="map-legend">
+              <span
+                ><b class="legend-symbol prototype-symbol"></b>Prototipo</span
+              ><span><b class="legend-symbol nest-symbol"></b>Nidos</span
+              ><span><b class="legend-symbol detection-symbol"></b>Fauna</span
+              ><span><b class="legend-symbol threat-symbol"></b>Amenazas</span>
+            </div>
+          </div>
+          <div class="map-footer">
+            <span id="location-label"
+              ><i class="bi bi-geo" aria-hidden="true"></i>Ubicación
+              pendiente</span
+            ><button class="text-button" id="pin-button" type="button">
+              <i class="bi bi-pin-map" aria-hidden="true"></i>Fijar ubicación
+            </button>
+          </div>
+        </section>
+        <section class="panel chart-panel">
+          <div class="panel-heading">
+            <div class="panel-title">
+              <i class="bi bi-activity" aria-hidden="true"></i
+              ><span
+                ><h2>Detección en el tiempo</h2>
+                <small>Eventos registrados en el período</small></span
+              >
+            </div>
+            <span class="chart-period" id="chart-period">24 horas</span>
+          </div>
+          <div class="chart-legend" aria-label="Series del gráfico">
+            <button type="button" data-series="tortugas" aria-pressed="true">
+              <span class="legend-line turtle-line"></span>Tortugas</button
+            ><button type="button" data-series="gaviotines" aria-pressed="true">
+              <span class="legend-line bird-line"></span>Gaviotines</button
+            ><button type="button" data-series="invasores" aria-pressed="true">
+              <span class="legend-line threat-line"></span>Amenazas
+            </button>
+          </div>
+          <div class="timeline-wrap">
+            <canvas
+              id="timeline-chart"
+              role="img"
+              aria-label="Evolución de detecciones"
+            ></canvas>
+            <p class="chart-empty" id="chart-empty">
+              Las detecciones aparecerán aquí al iniciar el monitoreo.
+            </p>
+          </div>
+        </section>
+        <section class="panel threat-panel" id="amenazas">
+          <div class="panel-heading">
+            <div class="panel-title">
+              <i class="bi bi-exclamation-triangle coral" aria-hidden="true"></i
+              ><span
+                ><h2>Amenazas</h2>
+                <small>Eventos que requieren atención</small></span
+              >
+            </div>
+            <button
+              class="icon-button"
+              id="report-threat"
+              type="button"
+              title="Registrar una amenaza observada"
+              aria-label="Registrar amenaza"
+            >
+              <i class="bi bi-plus-lg"></i>
+            </button>
+          </div>
+          <div id="threat-list" class="threat-list">
+            <p class="panel-empty">
+              <i class="bi bi-shield-check" aria-hidden="true"></i>Sin amenazas
+              registradas en este período.
+            </p>
+          </div>
+        </section>
+        <section
+          class="species-stack"
+          id="especies"
+          aria-label="Indicadores por especie"
+        >
+          <button
+            class="species-tile turtle-tile"
+            type="button"
+            data-species="tortugas"
+          >
+            <img
+              src="{{ url_for('static', filename='images/pacifico-tortuga.png') }}"
+              alt=""
+              aria-hidden="true"
+            />
+            <div>
+              <span>Tortugas marinas</span
+              ><strong id="species-tortugas">—</strong
+              ><small id="species-change-tortugas">Objetos reportados</small>
+            </div>
+            <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
+          </button>
+          <button
+            class="species-tile tern-tile"
+            type="button"
+            data-species="gaviotines"
+          >
+            <img
+              src="{{ url_for('static', filename='images/gaviotin-peruano.png') }}"
+              alt=""
+              aria-hidden="true"
+            />
+            <div>
+              <span>Gaviotines peruanos</span
+              ><strong id="species-gaviotines">—</strong
+              ><small id="species-change-gaviotines">Objetos reportados</small>
+            </div>
+            <i class="bi bi-arrow-up-right" aria-hidden="true"></i>
+          </button>
+        </section>
+      </div>
+      <section class="panel records-panel" id="registros">
+        <div class="panel-heading records-heading">
+          <div class="panel-title">
+            <i class="bi bi-layers" aria-hidden="true"></i
+            ><span
+              ><h2>Registro de detecciones</h2>
+              <small id="record-count">Conectando con el historial</small></span
+            >
+          </div>
+          <div class="record-filters">
+            <select id="species-filter" aria-label="Filtrar por especie">
+              <option value="todas">Todas las especies</option>
+              <option value="tortugas">Tortugas</option>
+              <option value="gaviotines">Gaviotines</option>
+              <option value="invasores">Amenazas</option></select
+            ><select id="state-filter" aria-label="Filtrar por estado">
+              <option value="todos">Todos los estados</option>
+              <option value="nuevo">Nuevos</option>
+              <option value="en_revision">En revisión</option>
+              <option value="confirmado">Confirmados</option>
+              <option value="resuelto">Resueltos</option>
+            </select>
+          </div>
         </div>
-        <div class="table-shell">
+        <div class="table-scroll">
           <table>
             <thead>
               <tr>
-                <th scope="col">Captura</th>
-                <th scope="col">Especie</th>
-                <th scope="col">Cantidad</th>
-                <th scope="col">Confianza</th>
-                <th scope="col">Dispositivo</th>
-                <th scope="col">Fecha y hora</th>
+                <th scope="col">
+                  <button type="button" data-sort="fecha">
+                    Fecha y hora <i class="bi bi-arrow-down-up"></i>
+                  </button>
+                </th>
+                <th scope="col">
+                  <button type="button" data-sort="especie">
+                    Especie / evento <i class="bi bi-arrow-down-up"></i>
+                  </button>
+                </th>
+                <th scope="col">
+                  <button type="button" data-sort="ubicacion">
+                    Ubicación <i class="bi bi-arrow-down-up"></i>
+                  </button>
+                </th>
+                <th scope="col">Tipo de evento</th>
+                <th scope="col">
+                  <button type="button" data-sort="confianza">
+                    Confianza <i class="bi bi-arrow-down-up"></i>
+                  </button>
+                </th>
+                <th scope="col">
+                  <button type="button" data-sort="estado">
+                    Estado <i class="bi bi-arrow-down-up"></i>
+                  </button>
+                </th>
+                <th scope="col"><span class="sr-only">Acciones</span></th>
               </tr>
             </thead>
             <tbody id="events-body"></tbody>
           </table>
-          <div class="table-empty" id="table-empty">
-            <strong>Aún no hay detecciones en este período.</strong
-            ><span
-              >Conecta la cámara, selecciona una especie e inicia el
-              monitoreo.</span
+          <div class="records-empty" id="records-empty">
+            <i class="bi bi-broadcast" aria-hidden="true"></i
+            ><strong>Esperando las primeras detecciones</strong>
+            <p>
+              Activa una especie desde WhatsApp con el monitor de tu PC en
+              ejecución.
+            </p>
+          </div>
+        </div>
+        <div class="pagination">
+          <span id="pagination-label">0 registros</span
+          ><span
+            class="count-note"
+            title="Los conteos suman objetos reportados. Un individuo puede aparecer en varios eventos."
+            >Conteos de objetos por evento
+            <i class="bi bi-info-circle" aria-hidden="true"></i
+          ></span>
+          <div>
+            <label class="sr-only" for="rows-per-page"
+              >Registros por página</label
+            ><select id="rows-per-page">
+              <option value="3">3 por página</option>
+              <option value="10">10 por página</option>
+              <option value="25">25 por página</option></select
+            ><button
+              class="icon-button"
+              id="previous-page"
+              type="button"
+              aria-label="Página anterior"
             >
+              <i class="bi bi-chevron-left"></i></button
+            ><span id="page-number">1 / 1</span
+            ><button
+              class="icon-button"
+              id="next-page"
+              type="button"
+              aria-label="Página siguiente"
+            >
+              <i class="bi bi-chevron-right"></i>
+            </button>
           </div>
         </div>
       </section>
       <footer class="page-footer">
-        <span>Ñawi Apu · Vigilancia de tortugas y gaviotines</span
-        ><span id="last-update">Esperando actualización</span>
+        <span
+          ><span class="status-dot" id="server-dot"></span
+          ><span id="server-status">Conectando al servidor</span></span
+        ><span id="storage-status"
+          >ÑAWI APU GOGO · Conservación en tiempo real</span
+        ><span>Hora de Perú <span id="peru-clock"></span></span>
       </footer>
     </main>
-    <dialog id="key-dialog">
-      <form id="key-form">
-        <div class="dialog-heading">
-          <h2>Clave de control</h2>
-          <button
-            class="close-button"
-            type="button"
-            data-close
-            aria-label="Cerrar"
+    <dialog id="settings-dialog">
+      <div class="dialog-heading">
+        <h2>Configuración de la estación</h2>
+        <button
+          class="icon-button"
+          data-close
+          aria-label="Cerrar"
+          type="button"
+        >
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <form id="settings-form">
+        <label for="control-key">Clave de control</label
+        ><input
+          id="control-key"
+          type="password"
+          autocomplete="off"
+          placeholder="El mismo valor de ALERTA_KEY del servidor"
+        />
+        <p class="field-help">
+          La clave se guarda en esta pestaña y autoriza cambios de ubicación y
+          estado.
+        </p>
+        <fieldset>
+          <legend>Variante visual</legend>
+          <label class="theme-option"
+            ><input type="radio" name="theme" value="pacifico" checked /><span
+              class="theme-swatch pacifico"
+            ></span
+            ><span
+              >Pacífico profundo<small>Azul marino y luz turquesa</small></span
+            ></label
+          ><label class="theme-option"
+            ><input type="radio" name="theme" value="abisal" /><span
+              class="theme-swatch abisal"
+            ></span
+            ><span
+              >Abisal<small>Azul nocturno y celeste glaciar</small></span
+            ></label
+          ><label class="theme-option"
+            ><input type="radio" name="theme" value="reserva" /><span
+              class="theme-swatch reserva"
+            ></span
+            ><span
+              >Reserva marina<small>Océano verde y acentos arena</small></span
+            ></label
           >
-            ×
+        </fieldset>
+        <label for="control-mode">Control del monitoreo</label>
+        <div class="inline-fields">
+          <select id="control-mode">
+            <option value="tortugas">Tortugas</option>
+            <option value="gaviotines">Gaviotines</option>
+            <option value="invasores">Amenazas</option>
+            <option value="detenido">Detener cámara</option></select
+          ><button type="button" class="button" id="apply-mode">
+            Aplicar modo
           </button>
         </div>
-        <p>
-          Usa el mismo valor de ALERTA_KEY que configuraste en Railway y en el
-          monitor de tu PC.
+        <p class="field-help">
+          También puedes enviar 1, 2, 3 o 4 al bot de WhatsApp.
         </p>
-        <label for="control-key">Clave compartida</label
-        ><input id="control-key" type="password" autocomplete="off" required />
-        <p class="small-note">
-          Se conserva en esta pestaña hasta que cierres la sesión del navegador.
-        </p>
-        <button class="button primary" type="submit">Guardar clave</button>
+        <button class="button primary full-width" type="submit">
+          Guardar configuración
+        </button>
       </form>
     </dialog>
-    <dialog id="setup-dialog">
+    <dialog id="location-dialog">
       <div class="dialog-heading">
-        <h2>Conectar la cámara de tu PC</h2>
+        <h2>Fijar ubicación</h2>
         <button
-          class="close-button"
-          type="button"
+          class="icon-button"
           data-close
           aria-label="Cerrar"
+          type="button"
         >
-          ×
+          <i class="bi bi-x-lg"></i>
         </button>
       </div>
-      <p>
-        Desde la carpeta del proyecto, ejecuta el monitor con el Python del
-        entorno que tiene YOLO instalado.
-      </p>
-      <pre><code id="setup-command"></code></pre>
-      <p>
-        El programa te pedirá la clave compartida si el servidor la requiere.
-        Mantén la PC encendida y el programa abierto.
-      </p>
-      <p>
-        Los comandos y la instalación están en
-        <strong>docs/DASHBOARD.md</strong>.
-      </p>
+      <form id="location-form">
+        <label for="location-name">Nombre de la ubicación</label
+        ><input
+          id="location-name"
+          required
+          maxlength="100"
+          placeholder="Ej. Prototipo · Playa Agua Dulce"
+        /><label for="location-type">Tipo de marcador</label
+        ><select id="location-type">
+          <option value="prototipo">Ubicación del prototipo</option>
+          <option value="nido">Nido observado</option>
+        </select>
+        <div class="inline-fields">
+          <label
+            >Latitud<input
+              id="latitude"
+              type="number"
+              step="any"
+              min="-90"
+              max="90"
+              required /></label
+          ><label
+            >Longitud<input
+              id="longitude"
+              type="number"
+              step="any"
+              min="-180"
+              max="180"
+              required
+          /></label>
+        </div>
+        <p class="field-help">
+          Elige el punto en el mapa o introduce sus coordenadas. Los nuevos
+          eventos conservarán esta ubicación.
+        </p>
+        <button class="button primary full-width" type="submit">
+          <i class="bi bi-pin-map" aria-hidden="true"></i>Guardar ubicación
+        </button>
+      </form>
     </dialog>
-    <dialog id="image-dialog">
+    <dialog id="dates-dialog">
       <div class="dialog-heading">
-        <h2 id="image-title">Captura de detección</h2>
+        <h2>Elegir rango de fechas</h2>
         <button
-          class="close-button"
-          type="button"
+          class="icon-button"
           data-close
           aria-label="Cerrar"
+          type="button"
         >
-          ×
+          <i class="bi bi-x-lg"></i>
         </button>
       </div>
-      <img id="detail-image" alt="Captura de la detección seleccionada" />
+      <form id="dates-form">
+        <label
+          >Desde<input id="date-start" type="datetime-local" required /></label
+        ><label
+          >Hasta<input id="date-end" type="datetime-local" required /></label
+        ><button class="button primary full-width" type="submit">
+          Aplicar fechas
+        </button>
+      </form>
     </dialog>
+    <dialog id="event-dialog">
+      <div class="dialog-heading">
+        <h2 id="event-title">Detalle del evento</h2>
+        <button
+          class="icon-button"
+          data-close
+          aria-label="Cerrar"
+          type="button"
+        >
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <div id="event-detail"></div>
+      <img id="event-image" alt="Evidencia de la detección" hidden /><label
+        for="event-state"
+        >Estado del evento</label
+      ><select id="event-state">
+        <option value="nuevo">Nuevo</option>
+        <option value="en_revision">En revisión</option>
+        <option value="confirmado">Confirmado</option>
+        <option value="resuelto">Resuelto</option></select
+      ><button
+        class="button primary full-width"
+        id="save-event-state"
+        type="button"
+      >
+        Guardar estado
+      </button>
+    </dialog>
+    <dialog id="threat-dialog">
+      <div class="dialog-heading">
+        <h2>Registrar amenaza observada</h2>
+        <button
+          class="icon-button"
+          data-close
+          aria-label="Cerrar"
+          type="button"
+        >
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <form id="threat-form">
+        <label
+          >Tipo de amenaza<select id="threat-type">
+            <option>Residuos plásticos</option>
+            <option>Embarcación cercana</option>
+            <option>Contaminación</option>
+            <option>Alteración de nido</option>
+            <option>Otra amenaza observada</option>
+          </select></label
+        ><label
+          >Severidad<select id="threat-severity">
+            <option value="advertencia">Advertencia</option>
+            <option value="alta">Alta</option>
+            <option value="critica">Crítica</option>
+            <option value="informativa">Informativa</option>
+          </select></label
+        >
+        <p class="field-help">
+          Se registrará como observación manual en la ubicación actual del
+          prototipo.
+        </p>
+        <button class="button primary full-width" type="submit">
+          Registrar observación
+        </button>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
   </body>
 </html>
