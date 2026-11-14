@@ -466,6 +466,7 @@ class DashboardTests(unittest.TestCase):
             name="PC prueba",
             no_window=True,
             amenazas_cada=0,
+            confirmar=0,
         )
         try:
             with patch.object(monitor_pc, "YOLO", return_value=model), patch.object(
@@ -552,7 +553,7 @@ class DashboardTests(unittest.TestCase):
                     enqueue=events.append,
                 )
                 args = SimpleNamespace(duration=0.3, camera=0, conf=0.6, imgsz=416, interval=20,
-                                       name="PC", no_window=True, amenazas_cada=1)
+                                       name="PC", no_window=True, amenazas_cada=1, confirmar=0)
                 loader = lambda name, m=species_model, t=threat_model: t if name == "invasores" else m
                 with patch.object(monitor_pc, "cargar_modelo", side_effect=loader), patch.object(
                     monitor_pc.cv2, "VideoCapture", return_value=capture
@@ -563,6 +564,50 @@ class DashboardTests(unittest.TestCase):
                 threat = next(event for event in events if event["especie"] == "invasores")
                 self.assertEqual(threat["tipo_evento"], "Intrusión: persona")
                 self.assertEqual(threat["severidad"], "alta")
+
+    def test_episodes_send_one_alert_per_appearance_with_best_photo(self):
+        from src.episodios import Episodios
+
+        ep = Episodios(confirmar=1.5, ausencia=30, recordatorio=600)
+        seen = lambda conf, n=1, foto="f": {"confianza": conf, "cantidad": n, "captura": foto}
+        sent = []
+        # Una persona se queda 5 minutos frente a la cámara (un cuadro cada 0,5 s).
+        for i in range(600):
+            t = i * 0.5
+            conf, n = (0.95, 2) if t == 1.0 else (0.7, 1)
+            found = ep.actualizar("invasores", t, seen(conf, n, foto=f"cuadro-{t}"))
+            if found:
+                sent.append((t, found))
+        self.assertEqual(len(sent), 1)  # una sola alerta, no una cada pocos segundos
+        t, found = sent[0]
+        self.assertEqual(t, 1.5)  # tras observar 1,5 s
+        self.assertEqual(found["captura"], "cuadro-1.0")  # la mejor foto del período
+        self.assertEqual(found["cantidad"], 2)  # la mayor cantidad vista
+        # Se va 40 s y vuelve: es una aparición nueva.
+        self.assertIsNone(ep.actualizar("invasores", 340, None))
+        self.assertIsNone(ep.actualizar("invasores", 341, seen(0.8)))
+        self.assertIsNotNone(ep.actualizar("invasores", 342.5, seen(0.8)))
+        # Si sigue a la vista 10 minutos seguidos, se envía un recordatorio (uno solo).
+        reminders = [
+            found for i in range(1, 1201)
+            if (found := ep.actualizar("invasores", 342.5 + i * 0.5, seen(0.8)))
+        ]
+        self.assertEqual(len(reminders), 1)
+        self.assertTrue(reminders[0]["recordatorio"])
+
+    def test_episodes_quick_appearance_and_species_are_independent(self):
+        from src.episodios import Episodios
+
+        ep = Episodios(confirmar=1.5, ausencia=30)
+        seen = {"confianza": 0.7, "cantidad": 1, "captura": "x"}
+        # Un falso positivo de "tortuga" no bloquea a los intrusos.
+        ep.actualizar("tortugas", 0, seen)
+        self.assertIsNotNone(ep.actualizar("tortugas", 2, seen))
+        ep.actualizar("invasores", 2.5, seen)
+        self.assertIsNotNone(ep.actualizar("invasores", 4, seen))
+        # Algo que aparece un instante y se va igual se reporta (al confirmar).
+        ep.actualizar("gaviotines", 10, seen)
+        self.assertIsNotNone(ep.actualizar("gaviotines", 11.6, None))
 
     # ---- Correcciones de arquitectura ----
 

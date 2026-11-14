@@ -24,6 +24,7 @@ load_dotenv(PROJECT_DIR / ".env")
 from ultralytics import YOLO
 from utils.agent_sync import AgentSync
 from src.hud import Hud
+from src.episodios import Episodios
 
 
 # Modelo por modo. Amenazas usa el YOLO oficial preentrenado con COCO (+100 000
@@ -77,7 +78,11 @@ def run_monitor(args, sync):
     fps = None
     window_ready = False
     hud = Hud()
-    last_event = {}
+    episodes = Episodios(
+        confirmar=getattr(args, "confirmar", 1.5),
+        ausencia=args.interval,
+        recordatorio=getattr(args, "recordatorio", 600),
+    )
     last_threat = None
     frame_number = 0
     next_open = 0
@@ -184,30 +189,37 @@ def run_monitor(args, sync):
                     else results[name].plot(img=annotated)
                 )
             sync.set_status("monitoreando")
+            # Episodios: una alerta por aparición (con la mejor foto), no una cada pocos segundos.
+            now = time.monotonic()
             for name, result in results.items():
                 found = len(result.boxes)
-                if not found or (
-                    time.monotonic() - last_event.get(name, -args.interval) < args.interval
-                ):
+                candidate = None
+                if found:
+                    candidate = {
+                        "confianza": float(result.boxes.conf.max()),
+                        "cantidad": found,
+                        "captura": jpeg(annotated),
+                        "labels": sorted({result.names[int(v)] for v in result.boxes.cls.tolist()}),
+                    }
+                finding = episodes.actualizar(name, now, candidate)
+                if not finding:
                     continue
                 event = {
                     "evento_id": str(uuid.uuid4()),
                     "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "especie": name,
-                    "cantidad": found,
-                    "confianza": float(result.boxes.conf.max()),
+                    "cantidad": finding["cantidad"],
+                    "confianza": finding["confianza"],
                     "dispositivo": args.name,
-                    "captura": jpeg(annotated),
+                    "captura": finding["captura"],
                     "ubicacion": config.get("ubicacion"),
                 }
                 if name == "invasores":
-                    labels = sorted({result.names[int(v)] for v in result.boxes.cls.tolist()})
-                    event["tipo_evento"] = "Intrusión: " + ", ".join(labels)
+                    event["tipo_evento"] = "Intrusión: " + ", ".join(finding["labels"])
                     event["severidad"] = "advertencia" if mode == "invasores" else "alta"
                     if mode != "invasores":
-                        print(f"⚠ Amenaza detectada mientras se vigilaba {mode}: {', '.join(labels)}", flush=True)
+                        print(f"⚠ Amenaza detectada mientras se vigilaba {mode}: {', '.join(finding['labels'])}", flush=True)
                 sync.enqueue(event)
-                last_event[name] = time.monotonic()
             main = results[mode]
             count = len(main.boxes)
             threat = results.get("invasores") if mode != "invasores" else None
@@ -271,7 +283,24 @@ def main():
     parser.add_argument("--duration", type=float, default=0)
     parser.add_argument("--conf", type=float, default=0.6)
     parser.add_argument("--imgsz", type=int, default=416)
-    parser.add_argument("--interval", type=float, default=20)
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=30,
+        help="Segundos sin ver algo para dar por terminada su aparición (episodio).",
+    )
+    parser.add_argument(
+        "--confirmar",
+        type=float,
+        default=1.5,
+        help="Segundos que se observa una aparición para elegir la mejor foto antes de enviarla.",
+    )
+    parser.add_argument(
+        "--recordatorio",
+        type=float,
+        default=600,
+        help="Si algo sigue a la vista, cada cuántos segundos se envía un recordatorio.",
+    )
     parser.add_argument(
         "--amenazas-cada",
         dest="amenazas_cada",
