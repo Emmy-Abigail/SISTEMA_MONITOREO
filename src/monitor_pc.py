@@ -5,6 +5,7 @@ import base64
 import getpass
 import os
 import socket
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from ultralytics import YOLO
 from utils.agent_sync import AgentSync
 from src.hud import Hud
 from src.episodios import Episodios
+from src import camara
 
 
 # Modelo por modo. Amenazas usa el YOLO oficial preentrenado con COCO (+100 000
@@ -145,11 +147,12 @@ def run_monitor(args, sync):
                 if time.monotonic() < next_open:
                     time.sleep(0.1)
                     continue
-                backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-                camera = cv2.VideoCapture(args.camera, backend)
-                if not camera.isOpened():
-                    camera.release()
-                    camera = None
+                camera = camara.abrir(
+                    getattr(args, "fuente", "opencv"),
+                    args.camera,
+                    tuning=getattr(args, "tuning", "auto"),
+                )
+                if camera is None:
                     next_open = time.monotonic() + 3
                     sync.set_status("error")
                     print(
@@ -157,18 +160,18 @@ def run_monitor(args, sync):
                         flush=True,
                     )
                     continue
-                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 print("Cámara encendida.", flush=True)
             frame_started = time.perf_counter()
             success, frame = camera.read()
-            if not success:
+            if not success or frame is None:
                 camera.release()
                 camera = None
                 next_open = time.monotonic() + 3
                 sync.set_status("error")
                 continue
+            frame = camara.preparar(
+                frame, getattr(args, "rotar", 0), getattr(args, "gris", False)
+            )
             results = {}
             annotated = frame
             for name in watch:
@@ -278,6 +281,30 @@ def main():
         ),
     )
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument(
+        "--fuente",
+        choices=camara.FUENTES,
+        default=os.environ.get("CAMARA_FUENTE", "auto"),
+        help="auto: cámara CSI (Picamera2) si hay una conectada a la Raspberry Pi; si no, webcam.",
+    )
+    parser.add_argument(
+        "--tuning",
+        default=os.environ.get("CAMARA_TUNING", "auto"),
+        help="Ajuste de libcamera para la cámara CSI (auto: imx219_noir.json para la NoIR V2; ninguno: de fábrica).",
+    )
+    parser.add_argument(
+        "--rotar",
+        type=int,
+        choices=sorted(camara.ROTACIONES),
+        default=int(os.environ.get("CAMARA_ROTAR", "0")),
+        help="Girar la imagen si la cámara está montada de lado o al revés.",
+    )
+    parser.add_argument(
+        "--gris",
+        action="store_true",
+        default=os.environ.get("CAMARA_GRIS", "").lower() in {"1", "si", "sí", "true"},
+        help="Analizar en escala de grises (útil con la cámara NoIR de día y de noche).",
+    )
     parser.add_argument("--name", default=socket.gethostname())
     parser.add_argument("--no-window", action="store_true")
     parser.add_argument("--duration", type=float, default=0)
@@ -327,8 +354,13 @@ def main():
         parser.error("Usa HTTPS para el servidor remoto.")
     if not 0 < args.conf <= 1 or args.imgsz < 32 or args.interval <= 0:
         parser.error("Confianza, tamaño de imagen o intervalo inválidos.")
+    if not args.no_window and not camara.hay_pantalla():
+        args.no_window = True
+        print("Sin pantalla conectada: se monitorea sin ventana.", flush=True)
     key = os.environ.get("ALERTA_KEY", "")
     if not key and not local:
+        if not sys.stdin.isatty():
+            parser.error("Falta ALERTA_KEY en el archivo .env (necesario al arrancar como servicio).")
         key = getpass.getpass("ALERTA_KEY del backend (oculta): ")
     sync = AgentSync(args.url, key, args.name, RUNTIME_DIR, whatsapp=args.whatsapp)
     print(f"ÑAWI APU listo. Backend: {args.url}", flush=True)

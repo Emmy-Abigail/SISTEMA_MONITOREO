@@ -655,6 +655,39 @@ class DashboardTests(unittest.TestCase):
             create.side_effect = None
             self.assertEqual(self.module.enviar_whatsapp("whatsapp:+2", "x"), "ok")
 
+    def test_trial_rejection_falls_back_to_plain_text(self):
+        from twilio.base.exceptions import TwilioRestException
+
+        trial = TwilioRestException(400, "uri", "trial accounts have limited parameter access", code=0)
+        with patch.multiple(
+            self.module,
+            TWILIO_ACCOUNT_SID="AC1",
+            TWILIO_AUTH_TOKEN="token",
+            TWILIO_WHATSAPP_FROM="whatsapp:+1",
+        ), patch.object(self.module, "Client") as client:
+            create = client.return_value.messages.create
+            # Se rechaza la plantilla y la foto; el texto solo sí llega.
+            create.side_effect = [trial, trial, MagicMock(sid="SM1")]
+            plantilla = {"sid": "HX1", "variables": {"1": "x"}}
+            self.assertEqual(
+                self.module.enviar_whatsapp("whatsapp:+2", "alerta", media_url="https://f/1.jpg",
+                                            plantilla=plantilla),
+                "ok",
+            )
+            self.assertEqual(create.call_count, 3)
+            self.assertIn("content_sid", create.call_args_list[0].kwargs)
+            self.assertEqual(create.call_args_list[1].kwargs["media_url"], ["https://f/1.jpg"])
+            self.assertNotIn("media_url", create.call_args_list[2].kwargs)
+            self.assertEqual(create.call_args_list[2].kwargs["body"], "alerta")
+            # Un error temporal no se degrada: se reintenta luego con la alerta completa.
+            create.reset_mock()
+            create.side_effect = TwilioRestException(503, "uri", "caído")
+            self.assertEqual(
+                self.module.enviar_whatsapp("whatsapp:+2", "alerta", media_url="https://f/1.jpg"),
+                "temporal",
+            )
+            self.assertEqual(create.call_count, 1)
+
     def test_stuck_alert_is_reclaimed(self):
         Path(self.module.USUARIOS_FILE).write_text(
             json.dumps({"whatsapp:+51000000001": {}})

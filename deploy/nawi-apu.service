@@ -1,0 +1,18 @@
+# Servicio systemd de la estación de cámara. Lo instala scripts/instalar_raspberry.sh --servicio,
+# que reemplaza __USUARIO__ y __DIRECTORIO__.
+[Unit]
+Description=ÑAWI APU - estación de cámara
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USUARIO__
+WorkingDirectory=__DIRECTORIO__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__DIRECTORIO__/.venv/bin/python -m src.monitor_pc --no-window --amenazas-cada 3
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

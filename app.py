@@ -333,20 +333,34 @@ def enviar_whatsapp(numero_destino, texto, media_url=None, evento_id=None, plant
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM):
         app.logger.error("❌ Credenciales Twilio no configuradas")
         return "temporal"
+    # Formas de envío, de la más completa a la más simple. Si Twilio rechaza una de forma
+    # permanente (p. ej. una cuenta de prueba que no permite plantillas o adjuntos), se
+    # prueba la siguiente: es mejor que llegue el texto de la alerta a que no llegue nada.
+    simple = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
+    intentos = []
+    if plantilla:
+        # Plantilla aprobada por Meta: permite alertar fuera de la ventana de 24 h.
+        intentos.append(("plantilla", {
+            "from_": TWILIO_WHATSAPP_FROM, "to": numero_destino,
+            "content_sid": plantilla["sid"],
+            "content_variables": json.dumps(plantilla["variables"], ensure_ascii=False)}))
+    if media_url:
+        intentos.append(("con foto", {**simple, "media_url": [media_url]}))
+    intentos.append(("solo texto", simple))
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        if plantilla:
-            # Plantilla aprobada por Meta: permite alertar fuera de la ventana de 24 h.
-            msg_params = {"from_": TWILIO_WHATSAPP_FROM, "to": numero_destino,
-                          "content_sid": plantilla["sid"],
-                          "content_variables": json.dumps(plantilla["variables"], ensure_ascii=False)}
-        else:
-            msg_params = {"from_": TWILIO_WHATSAPP_FROM, "body": texto, "to": numero_destino}
-            if media_url:
-                msg_params["media_url"] = [media_url]
-
-        message = client.messages.create(**msg_params)
-        app.logger.info(f"✅ Mensaje a {numero_destino} - SID: {message.sid}")
+        for numero_intento, (forma, msg_params) in enumerate(intentos, start=1):
+            try:
+                message = client.messages.create(**msg_params)
+                break
+            except TwilioRestException as e:
+                tipo = "permanente" if e.status in ESTADOS_HTTP_PERMANENTES else "temporal"
+                if tipo == "temporal" or numero_intento == len(intentos):
+                    raise
+                app.logger.warning(
+                    f"⚠️ Twilio rechazó el envío {forma} (código {e.code}): {e.msg}. Se intenta de otra forma."
+                )
+        app.logger.info(f"✅ Mensaje a {numero_destino} ({forma}) - SID: {message.sid}")
         if evento_id:
             with connect() as connection:
                 connection.execute(

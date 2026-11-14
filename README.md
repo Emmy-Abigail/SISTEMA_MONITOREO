@@ -245,8 +245,8 @@ Panel web **solo informativo** para el seguimiento y los reportes:
 
 ### Requisitos
 
-- Python 3.12
-- Cámara (webcam o cámara de Raspberry Pi)
+- Python 3.11 o superior (en la Raspberry Pi, el de Raspberry Pi OS)
+- Cámara: webcam en la laptop o **Raspberry Pi 5 con la cámara NoIR V2** (CSI)
 - Cuenta de [Twilio](https://www.twilio.com/) con WhatsApp y clave de [Google AI Studio](https://aistudio.google.com/) (Gemini)
 
 ### 1. Configurar
@@ -268,17 +268,71 @@ pip install -r requirements.txt
 python -m flask --app app run
 ```
 
-### 3. Estación de cámara
+### 3. Estación de cámara en una laptop
 
 ```bash
 pip install -r requirements_pc.txt
 python -m src.monitor_pc
 ```
 
-La estación queda esperando órdenes de WhatsApp. En la Raspberry Pi conviene buscar intrusos cada 3 cuadros para
-mantener la velocidad: `python -m src.monitor_pc --amenazas-cada 3`.
+La estación queda esperando órdenes de WhatsApp.
 
-### 4. Pruebas
+### 4. Estación de cámara en la Raspberry Pi 5 (cámara NoIR V2)
+
+**Hardware**
+
+- Raspberry Pi 5 con Raspberry Pi OS de 64 bits, fuente oficial de 27 W y ventilador activo.
+- Cámara **Raspberry Pi NoIR V2** (sensor IMX219, sin filtro infrarrojo).
+- **Cable CSI de 22 a 15 pines**: la Pi 5 usa conectores más pequeños que el cable que trae la cámara. Se conecta
+  con la Pi apagada, en el conector CAM/DISP 0, siguiendo la guía oficial de la cámara.
+- Para la noche, un **iluminador infrarrojo de 850 nm**: la NoIR V2 ve la luz IR pero no trae LEDs propios.
+
+La Pi 5 detecta la cámara sola (no hace falta editar `config.txt`). Comprobarlo con `rpicam-hello --list-cameras`:
+debe aparecer `imx219`.
+
+**Instalación**
+
+```bash
+git clone https://github.com/Emmy-Abigail/SISTEMA_MONITOREO.git
+cd SISTEMA_MONITOREO
+bash scripts/instalar_raspberry.sh      # Picamera2, entorno virtual y dependencias
+nano .env                               # completar ALERTA_KEY
+```
+
+**Probar la cámara y el modelo** (sin servidor ni WhatsApp). Sin pantalla, `--guardar` deja la última imagen
+analizada para revisarla:
+
+```bash
+.venv/bin/python -m src.probar_camara --duration 30 --guardar prueba.jpg
+```
+
+**Ejecutar la estación**
+
+```bash
+.venv/bin/python -m src.monitor_pc --amenazas-cada 3
+```
+
+Si no hay pantalla conectada, la estación funciona sin ventana automáticamente. Para que arranque sola al
+encender la Pi y se reinicie si falla:
+
+```bash
+bash scripts/instalar_raspberry.sh --servicio
+journalctl -u nawi-apu -f               # ver lo que hace
+```
+
+**Opciones de la cámara** (en la línea de comandos o en `.env`):
+
+| Opción | `.env` | Uso |
+|---|---|---|
+| `--fuente auto\|picamera\|opencv` | `CAMARA_FUENTE` | `auto` usa la cámara CSI si está conectada; si no, la webcam |
+| `--tuning auto\|ninguno\|archivo.json` | `CAMARA_TUNING` | `auto` carga `imx219_noir.json`, el ajuste de color de la NoIR V2 |
+| `--rotar 0\|90\|180\|270` | `CAMARA_ROTAR` | Si la cámara quedó montada girada |
+| `--gris` | `CAMARA_GRIS=si` | Analiza en escala de grises: de día la NoIR da tonos rosados y de noche la imagen IR es monocroma |
+
+> ⚠️ Los modelos de tortugas y gaviotines se entrenaron con fotos a color. De noche, con luz infrarroja, hay que
+> comprobar su precisión con imágenes reales de la NoIR y, si baja, reentrenarlos con esas imágenes.
+
+### 5. Pruebas
 
 ```bash
 python -m unittest discover -s tests
@@ -292,7 +346,12 @@ python -m unittest discover -s tests
 ├── app.py                  # Servidor: bot de WhatsApp y alertas
 ├── src/
 │   ├── monitor_pc.py       # Estación de cámara (detección y envío)
+│   ├── camara.py           # Fuente de video: webcam o cámara CSI de la Raspberry Pi
+│   ├── episodios.py        # Una alerta por aparición, con la mejor foto
+│   ├── probar_camara.py    # Prueba de cámara y modelo sin servidor
 │   └── hud.py              # Ventana de la cámara en vivo
+├── scripts/instalar_raspberry.sh  # Instalación en la Raspberry Pi 5
+├── deploy/nawi-apu.service # Arranque automático (systemd)
 ├── utils/
 │   ├── dashboard.py        # API y datos del dashboard
 │   ├── gemini.py           # Verificación con Gemini
@@ -312,7 +371,8 @@ python -m unittest discover -s tests
 - [x] Verificación con Gemini y reducción de falsas alarmas
 - [x] Alertas por WhatsApp con foto y respuestas en lenguaje natural
 - [x] Dashboard con mapa, métricas y reportes
-- [ ] Estación definitiva en **Raspberry Pi 5** con cámara IR para la noche
+- [x] Soporte de la **Raspberry Pi 5** con la cámara **NoIR V2** y arranque automático
+- [ ] Prueba en la playa con iluminación infrarroja y validación de los modelos de noche
 - [ ] Modelos optimizados con **LiteRT**
 - [ ] Reentrenamiento en **Google Colab** con las falsas alarmas registradas
 - [ ] Varias estaciones a lo largo de la costa
