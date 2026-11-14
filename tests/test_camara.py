@@ -14,6 +14,13 @@ def picamera2_falso(modelo="imx219"):
     """Módulo picamera2 simulado con una cámara del modelo indicado."""
     instancia = MagicMock()
     instancia.capture_array.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
+    # Modos reales de la NoIR V2 (IMX219) en la Raspberry Pi 5.
+    instancia.sensor_modes = [
+        {"size": (640, 480), "crop_limits": (1000, 752, 1280, 960), "fps": 103.33},
+        {"size": (1640, 1232), "crop_limits": (0, 0, 3280, 2464), "fps": 41.85},
+        {"size": (1920, 1080), "crop_limits": (680, 692, 1920, 1080), "fps": 47.57},
+        {"size": (3280, 2464), "crop_limits": (0, 0, 3280, 2464), "fps": 21.19},
+    ]
     clase = MagicMock(return_value=instancia)
     clase.global_camera_info.return_value = [{"Model": modelo, "Num": 0}] if modelo else []
     clase.load_tuning_file.side_effect = lambda nombre: {"archivo": nombre}
@@ -28,8 +35,10 @@ class CamaraTests(unittest.TestCase):
             fuente = camara.abrir("auto", 0)
             self.assertIsNotNone(fuente)
             clase.assert_called_once_with(camera_num=0, tuning={"archivo": "imx219_noir.json"})
-            config = instancia.create_video_configuration.call_args.kwargs["main"]
-            self.assertEqual(config, {"size": (640, 480), "format": "RGB888"})
+            opciones = instancia.create_video_configuration.call_args.kwargs
+            self.assertEqual(opciones["main"], {"size": (640, 480), "format": "RGB888"})
+            # Se usa el modo de campo completo, no el 640×480 que recorta el centro.
+            self.assertEqual(opciones["sensor"], {"output_size": (1640, 1232)})
             ok, frame = fuente.read()
             self.assertTrue(ok)
             self.assertEqual(frame.shape, (480, 640, 3))

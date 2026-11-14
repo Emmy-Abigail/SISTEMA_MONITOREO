@@ -43,6 +43,26 @@ def resolver_fuente(fuente):
     return "opencv"
 
 
+def modo_campo_completo(camara, fps_minimo=25):
+    """El modo más pequeño del sensor que capta la imagen entera (sin recorte) a buena velocidad.
+
+    Los modos pequeños suelen ser un recorte del centro: en la IMX219, 640×480 solo ve el
+    centro del sensor. Se elige uno completo (1640×1232) y se reduce a 640×480, así la
+    cámara ve toda la playa.
+    """
+    try:
+        modos = [
+            m for m in camara.sensor_modes
+            if tuple(m.get("crop_limits", (1, 1))[:2]) == (0, 0) and m.get("fps", 0) >= fps_minimo
+        ]
+    except Exception:
+        return None
+    if not modos:
+        return None
+    tamano = min(modos, key=lambda m: m["size"][0] * m["size"][1])["size"]
+    return tuple(tamano)
+
+
 class CamaraPicamera:
     """Envuelve Picamera2 con la misma interfaz que cv2.VideoCapture (read / release)."""
 
@@ -67,9 +87,14 @@ class CamaraPicamera:
         self.descripcion = f"CSI {sensor or '?'}" + (f" ({tuning})" if tuning else "")
         self.camara = Picamera2(camera_num=indice, tuning=datos_tuning)
         try:
+            opciones = {}
+            modo = modo_campo_completo(self.camara)
+            if modo:
+                opciones["sensor"] = {"output_size": modo}
+                self.descripcion += f", sensor {modo[0]}×{modo[1]}"
             # "RGB888" de Picamera2 entrega los bytes en orden BGR, el que usa OpenCV.
             config = self.camara.create_video_configuration(
-                main={"size": (ancho, alto), "format": "RGB888"}, buffer_count=2
+                main={"size": (ancho, alto), "format": "RGB888"}, buffer_count=2, **opciones
             )
             self.camara.configure(config)
             self.camara.start()
