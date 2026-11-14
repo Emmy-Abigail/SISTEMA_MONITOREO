@@ -15,7 +15,7 @@ const timeFormat = new Intl.DateTimeFormat("es-PE", {
 const speciesNames = {
   tortugas: "Tortuga marina",
   gaviotines: "Gaviotín peruano",
-  invasores: "Amenaza / intrusión",
+  invasores: "Intrusión",
 };
 const stateNames = {
   nuevo: "Nuevo",
@@ -453,8 +453,6 @@ function renderKpis(kpis) {
             "% vs. período anterior";
     }
   }
-  $("nav-threats").textContent = kpis.invasores.valor;
-  $("nav-threats").hidden = kpis.invasores.valor === 0;
 }
 function renderStatus(data, config) {
   const device = data.dispositivo;
@@ -485,7 +483,7 @@ function renderStatus(data, config) {
   $("mode-indicator").textContent = {
     tortugas: "🐢 Vigilando tortugas",
     gaviotines: "🐦 Vigilando gaviotines",
-    invasores: "⚠ Vigilando amenazas",
+    invasores: "⚠ Vigilando intrusos",
     detenido: "⏸ Vigilancia en pausa",
   }[config.mode] || "—";
   $("mode-indicator").className = "mode-indicator " + config.mode;
@@ -527,7 +525,7 @@ function renderCharts(data) {
       label: {
         tortugas: "Tortugas",
         gaviotines: "Gaviotines",
-        invasores: "Amenazas",
+        invasores: "Intrusos",
       }[name],
       data: data.serie.map((item) => item[name] || 0),
       borderColor: palette[name],
@@ -988,7 +986,7 @@ function renderThreats(threats) {
     p.className = "panel-empty";
     const icon = document.createElement("i");
     icon.className = "bi bi-shield-check";
-    p.append(icon, document.createTextNode("Sin amenazas en " + periodLabel().current + "."));
+    p.append(icon, document.createTextNode("Sin intrusos en " + periodLabel().current + "."));
     root.append(p);
     return;
   }
@@ -1018,7 +1016,7 @@ function renderThreats(threats) {
     more.type = "button";
     more.className = "text-button threat-more";
     more.textContent =
-      "Ver las " + (threats.length >= 50 ? "50+" : threats.length) + " amenazas en el registro →";
+      "Ver los " + (threats.length >= 50 ? "50+" : threats.length) + " intrusos en el registro →";
     more.addEventListener("click", () => {
       $("species-filter").value = "invasores";
       setStateFilter("todos");

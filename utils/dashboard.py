@@ -515,6 +515,19 @@ def update_event(event_id):
     return jsonify(status="ok", estado=data["estado"])
 
 
+@dashboard.delete("/api/detecciones/<event_id>")
+def delete_event(event_id):
+    """Borra una detección y su foto (p. ej. pruebas o fotos de personas). Requiere la clave."""
+    authorize()
+    with connect() as connection:
+        deleted = connection.execute("DELETE FROM detecciones WHERE id=?", (event_id,)).rowcount
+        for table in ("alert_runs", "alert_deliveries", "alert_rejections", "alert_messages"):
+            connection.execute(f"DELETE FROM {table} WHERE evento_id=?", (event_id,))
+    if not deleted:
+        abort(404, description="El evento no existe.")
+    return jsonify(status="borrado", evento_id=event_id)
+
+
 @dashboard.get("/api/detecciones/<event_id>")
 def event_detail(event_id):
     with connect() as connection:

@@ -70,7 +70,7 @@
         >
         <a href="#amenazas"
           ><i class="bi bi-exclamation-triangle" aria-hidden="true"></i
-          >Amenazas<span class="nav-count" id="nav-threats" hidden></span
+          >Intrusos</span
         ></a>
         <button type="button" data-export>
           <i class="bi bi-file-earmark-arrow-down" aria-hidden="true"></i
@@ -213,7 +213,7 @@
             ><i class="bi bi-exclamation-triangle" aria-hidden="true"></i
           ></span>
           <div>
-            <h2>Amenazas registradas</h2>
+            <h2>Intrusos detectados</h2>
             <strong id="kpi-invasores" class="loading-value">—</strong>
             <p id="change-invasores">Cargando período</p>
           </div>
@@ -258,7 +258,7 @@
                 ><b class="legend-symbol prototype-symbol"></b>Estación</span
               ><span><b class="legend-symbol nest-symbol"></b>Nidos</span
               ><span><b class="legend-symbol detection-symbol"></b>Fauna</span
-              ><span><b class="legend-symbol threat-symbol"></b>Amenazas</span>
+              ><span><b class="legend-symbol threat-symbol"></b>Intrusos</span>
             </div>
           </div>
           <div class="map-footer">
@@ -290,7 +290,7 @@
             ><button type="button" data-series="gaviotines" aria-pressed="true">
               <span class="legend-line bird-line"></span>Gaviotines</button
             ><button type="button" data-series="invasores" aria-pressed="true">
-              <span class="legend-line threat-line"></span>Amenazas
+              <span class="legend-line threat-line"></span>Intrusos
             </button>
           </div>
           <div class="timeline-wrap">
@@ -309,8 +309,8 @@
             <div class="panel-title">
               <i class="bi bi-exclamation-triangle coral" aria-hidden="true"></i
               ><span
-                ><h2>Amenazas</h2>
-                <small>Eventos que requieren atención</small></span
+                ><h2>Intrusos recientes</h2>
+                <small id="threat-subtitle">Personas, perros o vehículos detectados</small></span
               >
             </div>
           </div>
@@ -354,7 +354,7 @@
               <option value="todas">Todas las especies</option>
               <option value="tortugas">Tortugas</option>
               <option value="gaviotines">Gaviotines</option>
-              <option value="invasores">Amenazas</option></select
+              <option value="invasores">Intrusos</option></select
             ><div
               class="state-chips"
               id="state-chips"

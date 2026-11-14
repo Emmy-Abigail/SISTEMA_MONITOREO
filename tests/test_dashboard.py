@@ -840,9 +840,9 @@ class DashboardTests(unittest.TestCase):
         number = "whatsapp:+51000000020"
         reply = lambda body: self.client.post("/whatsapp", data={"Body": body, "From": number}).get_data(as_text=True)
         first = reply("Menú")
-        self.assertIn("Le damos la bienvenida", first)  # solo en el primer contacto
+        self.assertIn("*Bienvenido, encargado de vigilancia.*", first)
         self.assertIn("1️⃣ *Vigilancia de tortugas*", first)
-        self.assertNotIn("bienvenida", reply("MENU"))
+        self.assertIn("Bienvenido", reply("MENU"))  # el menú siempre da la bienvenida
         # Sin cámara conectada: lo dice al activar y en el estado.
         activated = reply("1")
         self.assertIn("*VIGILANCIA ACTIVADA* 🐢", activated)
@@ -959,6 +959,14 @@ class DashboardTests(unittest.TestCase):
             )
         sender.assert_called_once()
         self.assertEqual(self.client.get("/api/detecciones/ia-caida").json["ia_resultado"], "error")
+
+    def test_delete_event_and_photo_requires_key(self):
+        self._detection_with_photo("borrar-1")
+        self.assertEqual(self.client.delete("/api/detecciones/borrar-1").status_code, 401)
+        self.assertEqual(self.client.delete("/api/detecciones/borrar-1", headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.get("/api/detecciones/borrar-1").status_code, 404)
+        self.assertEqual(self.client.get("/api/detecciones/borrar-1/imagen").status_code, 404)
+        self.assertEqual(self.client.delete("/api/detecciones/borrar-1", headers=self.headers).status_code, 404)
 
     def test_exact_coordinates_require_key(self):
         nest = {"nombre": "Nido 1", "latitud": -12.163456, "longitud": -77.031234, "tipo": "nido"}

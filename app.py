@@ -112,6 +112,7 @@ def generar_menu_principal():
     return (
         "*ÑAWI APU* | _Guardián costero_\n"
         f"{SEP}\n"
+        "*Bienvenido, encargado de vigilancia.*\n\n"
         "1️⃣ *Vigilancia de tortugas* 🐢\n"
         "     ↳ _Incluye alerta de intrusos_\n"
         "2️⃣ *Vigilancia de gaviotines* 🐦\n"
@@ -121,10 +122,6 @@ def generar_menu_principal():
         f"{SEP}\n"
         "_Responda con el número de la opción._"
     )
-
-
-def generar_bienvenida():
-    return "Le damos la bienvenida a *ÑAWI APU*, sistema de vigilancia costera.\n\n"
 
 
 def generar_ayuda():
@@ -421,10 +418,8 @@ def whatsapp_reply():
     if nuevo:
         usuarios[from_number] = {"registrado": True, "fecha_registro": datetime.now(timezone.utc).isoformat()}
         guardar_json(USUARIOS_FILE, usuarios)
-    saludo = generar_bienvenida() if nuevo else ""
-
     def responder(cuerpo):
-        msg.body(saludo + cuerpo)
+        msg.body(cuerpo)
         return str(resp)
 
     if texto in PALABRAS_MENU or texto.startswith("join "):
